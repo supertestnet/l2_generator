@@ -93,7 +93,7 @@
                     value: amnt,
                     scriptPubKey: tapscript.Address.toScriptPubKey( addy ),
                 }),
-                makeAddress: ( chan_id, scripts ) => {
+                makeAddress: ( scripts ) => {
                     var tree = scripts.map( s => tapscript.Tap.encodeScript( s ) );
                     var pubkey = "ab".repeat( 32 );
                     var [ tpubkey ] = tapscript.Tap.getPubKey( pubkey, { tree });
@@ -115,7 +115,7 @@
                     [ "OP_SIZE", 32, "OP_EQUALVERIFY", "OP_SHA256", hash, "OP_EQUALVERIFY", hedgehog.state[ chan_id ].alices_pubkey, "OP_CHECKSIGVERIFY", hedgehog.state[ chan_id ].bobs_pubkey, "OP_CHECKSIG" ],
                     [ hedgehog.state[ chan_id ].alices_pubkey, "OP_CHECKSIGVERIFY", hedgehog.state[ chan_id ].bobs_pubkey, "OP_CHECKSIG" ],
                 ]),
-                openChannel: async ( push_all_funds_to_counterparty, alices_pubkey_and_hash = null, papa_swap_hash = null, utxos_for_papa_swap = null ) => {
+                openChannel: async ( push_all_funds_to_counterparty, alices_pubkey_and_hash = null, papa_swap_hash = null, utxos_for_papa_swap = null, deposit_amount = null, change_address = null, data = null ) => {
                     //there are three ways to open a channel:
                     //the first way is as Bob, opening a channel to Alice unilaterally
                     //the code for that appears after this "if" statement (not in it) because a
@@ -129,9 +129,13 @@
                     //just have Alice open a channel with push_all_funds_to_counterparty set to true
                     //or have Bob open a channel with push_all_funds_to_counterparty set to false
                     if ( !push_all_funds_to_counterparty ) {
-                        var has_data = confirm( `Click ok if someone sent you channel opening info or cancel if you are opening this channel yourself` );
+                        if ( !data ) {
+                            var has_data = confirm( `Click ok if someone sent you channel opening info or cancel if you are opening this channel yourself` );
+                        } else {
+                            has_data = true;
+                        }
                         if ( has_data ) {
-                            var data = JSON.parse( prompt( `Enter the data your counterparty sent you` ) );
+                            if ( !data ) data = JSON.parse( prompt( `Enter the data your counterparty sent you` ) );
                             //TODO: validate the data so you don't acccidentally accept irredeemable coins
                             //or crash your wallet
 
@@ -155,7 +159,7 @@
                             var multisig_tree = [ tapscript.Tap.encodeScript( multisig_script ) ];
                             hedgehog.state[ chan_id ].multisig_script = multisig_script;
                             hedgehog.state[ chan_id ].multisig_tree = multisig_tree;
-                            hedgehog.state[ chan_id ].multisig = hedgehog.makeAddress( chan_id, [ multisig_script ] );
+                            hedgehog.state[ chan_id ].multisig = hedgehog.makeAddress( [ multisig_script ] );
 
                             //temporarily pretend the entire balance is on Bob's side so he can
                             //send it to Alice using the regular send command
@@ -171,14 +175,14 @@
                             hedgehog.state[ chan_id ].balances = [ amnt, 0 ];
 
                             //update the send/receive/close buttons to use this channel
-                            $( '.send_btn' ).onclick = () => {console.log( "send this data to your recipient:" );console.log( JSON.stringify( hedgehog.send( chan_id ) ) );}
-                            $( '.receive_btn' ).onclick = () => {hedgehog.receive();}
-                            $( '.close_channel' ).onclick = () => {hedgehog.closeChannel( chan_id );}
-                            $( '.send_htlc_btn' ).onclick = async () => {
-                                var chan_id = Object.keys( hedgehog.state )[ 0 ];
-                                var amnt = Number( prompt( `enter an amount of sats you want to send to the htlc` ) );
-                                var info_for_bob = await hedgehog.aliceSendsHtlc( chan_id, amnt );
-                            }
+                            // $( '.send_btn' ).onclick = () => {console.log( "send this data to your recipient:" );console.log( JSON.stringify( hedgehog.send( chan_id ) ) );}
+                            // $( '.receive_btn' ).onclick = () => {hedgehog.receive();}
+                            // $( '.close_channel' ).onclick = () => {hedgehog.closeChannel( chan_id );}
+                            // $( '.send_htlc_btn' ).onclick = async () => {
+                            //     var chan_id = Object.keys( hedgehog.state )[ 0 ];
+                            //     var amnt = Number( prompt( `enter an amount of sats you want to send to the htlc` ) );
+                            //     var info_for_bob = await hedgehog.aliceSendsHtlc( chan_id, amnt );
+                            // }
                             alert( `yay, your channel is open!` );
                         } else {
                             // In this way, Alice does *not* receive data from Bob but instead
@@ -202,32 +206,62 @@
                     var multisig_tree = [ tapscript.Tap.encodeScript( multisig_script ) ];
                     hedgehog.state[ chan_id ].multisig_script = multisig_script;
                     hedgehog.state[ chan_id ].multisig_tree = multisig_tree;
-                    hedgehog.state[ chan_id ].multisig = hedgehog.makeAddress( chan_id, [ multisig_script ] );
+                    hedgehog.state[ chan_id ].multisig = hedgehog.makeAddress( [ multisig_script ] );
                     if ( papa_swap_hash ) {
-                        console.log( hedgehog.state[ chan_id ].multisig, papa_swap_hash, utxos_for_papa_swap );
-                        var vin = [];
-                        utxos_for_papa_swap.forEach( utxo => {
-                            vin.
-                        });
-                        var papa_swap_funding_tx = tapscript.Tx.create({
-                            vin,
-                            vout,
-                        });
-                        return;
-                        //if we are using a papa swap, a transaction needs to go from the multisig to a
+                        //we are using a papa swap so a transaction needs to go from the multisig to a
                         //revocable address; and a 2 week timelock from the revocable address should give
                         //the funds back to Bob; but if he revokes this path, then of course Alice can
                         //sweep it if Bob tries to use it, because she will have the revocation preimage.
+                        var vin = [];
+                        var sum = 0;
+                        utxos_for_papa_swap.forEach( utxo => {
+                            sum = sum + utxo.amnt;
+                            vin.push( hedgehog.getVin( utxo.txid, utxo.vout, utxo.amnt, utxo.addy ) );
+                        });
+                        var papa_swap_funding_tx = tapscript.Tx.create({
+                            vin,
+                            vout: [hedgehog.getVout( deposit_amount, hedgehog.state[ chan_id ].multisig )],
+                        });
+                        var deposit_mining_txfee = 500;
+                        if ( sum - deposit_amount - deposit_mining_txfee > 330 ) {
+                            papa_swap_funding_tx.vout.push( hedgehog.getVout( sum - deposit_amount - deposit_mining_txfee, change_address ) );
+                        }
+                        var i; for ( i=0; i<papa_swap_funding_tx.vin.length; i++ ) {
+                            var utxo = utxos_for_papa_swap[ i ];
+                            var sig = tapscript.Signer.taproot.sign( utxo[ "skey" ], papa_swap_funding_tx, 0 ).hex;
+                            papa_swap_funding_tx.vin[ i ].witness = [ sig ];
+                        }
+                        var funding_txhex = tapscript.Tx.encode( papa_swap_funding_tx ).hex;
+                        var txid = tapscript.Tx.util.getTxid( papa_swap_funding_tx );
+                        var utxos_created = [];
+                        if ( sum - deposit_amount - deposit_mining_txfee > 330 ) {
+                            utxos_created.push( {txid, vout: 1, amnt: sum - deposit_amount - deposit_mining_txfee, addy: change_address } );
+                        }
+                        var vout = 0;
+                        var amnt = deposit_amount;
 
-                        //also note: before proceeding, Bob needs to tell Alice what papa swap hash he
-                        //will use (this should be in a lightning invoice he gives to her) and a sig that
-                        //sends the money to the revocable address to Alice, and he must get *from* her a
-                        //transaction sending the money to the revocable address from the multisig
-                        var multisig_revocation_script = "test";
+                        var revocable_scripts = [
+                            [
+                                2016,
+                                "OP_CHECKSEQUENCEVERIFY",
+                                "OP_DROP",
+                                hedgehog.state[ chan_id ].bobs_pubkey,
+                                "OP_CHECKSIG",
+                            ],
+                            [
+                                "OP_SIZE",
+                                32,
+                                "OP_EQUALVERIFY",
+                                "OP_SHA256",
+                                papa_swap_hash,
+                                "OP_EQUALVERIFY",
+                                hedgehog.state[ chan_id ].alices_pubkey,
+                                "OP_CHECKSIG",
+                            ]
+                        ];
 
-                        var txid = prompt( `send some sats to this address and give the txid:\n\n${hedgehog.state[ chan_id ].multisig}` );
-                        var vout = Number( prompt( `and the vout` ) );
-                        var amnt = Number( prompt( `and the amount` ) );
+                        var revocable_address = hedgehog.makeAddress( revocable_scripts );
+
                         hedgehog.state[ chan_id ].multisig_utxo_info = {
                             txid,
                             vout,
@@ -242,19 +276,17 @@
                         var opening = true;
                         var sigs_and_stuff = hedgehog.send( chan_id, amnt - 500 - 500, opening );
                         sigs_and_stuff[ "amnt" ] = amnt;
-                        console.log( "send this data to your recipient:" );
-                        console.log( JSON.stringify( sigs_and_stuff ) );
 
                         //update the state to reflect alice's ability to withdraw 100%
                         hedgehog.state[ chan_id ].balances = [ amnt, 0 ];
                         hedgehog.state[ chan_id ].balances_before_most_recent_receive = [ amnt, 0 ];
 
-                        //update the send/receive/close buttons to use this channel
-                        $( '.send_btn' ).onclick = () => {console.log( "send this data to your recipient:" );console.log( JSON.stringify( hedgehog.send( chan_id ) ) );}
-                        $( '.receive_btn' ).onclick = () => {hedgehog.receive();}
-                        $( '.close_channel' ).onclick = () => {hedgehog.closeChannel( chan_id );}
-                        alert( `yay, your channel is funded! send your counterparty the info in your console` );
-                        return;
+                        // update the send/receive/close buttons to use this channel
+                        // $( '.send_btn' ).onclick = () => {console.log( "send this data to your recipient:" );console.log( JSON.stringify( hedgehog.send( chan_id ) ) );}
+                        // $( '.receive_btn' ).onclick = () => {hedgehog.receive();}
+                        // $( '.close_channel' ).onclick = () => {hedgehog.closeChannel( chan_id );}
+                        // alert( `yay, your channel is funded! send your counterparty the info in your console` );
+                        return [ chan_id, sigs_and_stuff, funding_txhex, utxos_created ];
                     }
                     console.log( "address:", hedgehog.state[ chan_id ].multisig );
 
@@ -326,11 +358,11 @@
                     //create the revocation scripts so the recipient can revoke this state later
                     if ( am_alice ) {
                         var latest_scripts = hedgehog.makeBobsRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].bob_can_revoke.push( [ revocable_address, latest_scripts ] );
                     } else {
                         var latest_scripts = hedgehog.makeAlicesRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].alice_can_revoke.push( [ revocable_address, latest_scripts ] );
                     }
 
@@ -532,11 +564,11 @@
                     //create the revocation scripts so the recipient can revoke this state later
                     if ( am_alice ) {
                         var latest_scripts = hedgehog.makeAlicesRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].alice_can_revoke.push( [ revocable_address, latest_scripts ] );
                     } else {
                         var latest_scripts = hedgehog.makeBobsRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].bob_can_revoke.push( [ revocable_address, latest_scripts ] );
                     }
 
@@ -812,11 +844,11 @@
                     //create the revocation scripts so the recipient can revoke this state later
                     if ( am_alice ) {
                         var latest_scripts = hedgehog.makeBobsRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].bob_can_revoke.push( [ revocable_address, latest_scripts ] );
                     } else {
                         var latest_scripts = hedgehog.makeAlicesRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].alice_can_revoke.push( [ revocable_address, latest_scripts ] );
                     }
 
@@ -861,7 +893,7 @@
                         var htlc_preimage = null;
                     }
                     var htlc_scripts = hedgehog.makeHTLC( chan_id, htlc_hash );
-                    var htlc_address = hedgehog.makeAddress( chan_id, htlc_scripts );
+                    var htlc_address = hedgehog.makeAddress( htlc_scripts );
 
                     //create tx1 to send all the funds into the htlc
                     var tx1 = tapscript.Tx.create({
@@ -1149,11 +1181,11 @@
                     //create the revocation scripts so the recipient can revoke this state later
                     if ( am_alice ) {
                         var latest_scripts = hedgehog.makeAlicesRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].alice_can_revoke.push( [ revocable_address, latest_scripts ] );
                     } else {
                         var latest_scripts = hedgehog.makeBobsRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].bob_can_revoke.push( [ revocable_address, latest_scripts ] );
                     }
 
@@ -1173,7 +1205,7 @@
                     //create the htlc
                     var htlc_hash = data[ "htlc_hash" ];
                     var htlc_scripts = hedgehog.makeHTLC( chan_id, htlc_hash );
-                    var htlc_address = hedgehog.makeAddress( chan_id, htlc_scripts );
+                    var htlc_address = hedgehog.makeAddress( htlc_scripts );
 
                     //create tx1 to send all the funds into the htlc
                     var tx1 = tapscript.Tx.create({
@@ -1611,11 +1643,11 @@
                     //create the revocation scripts so the recipient can revoke this state later
                     if ( am_alice ) {
                         var latest_scripts = hedgehog.makeBobsRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].bob_can_revoke.push( [ revocable_address, latest_scripts ] );
                     } else {
                         var latest_scripts = hedgehog.makeAlicesRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].alice_can_revoke.push( [ revocable_address, latest_scripts ] );
                     }
 
@@ -1660,7 +1692,7 @@
                         var htlc_preimage = null;
                     }
                     var htlc_scripts = hedgehog.makeHTLC( chan_id, htlc_hash );
-                    var htlc_address = hedgehog.makeAddress( chan_id, htlc_scripts );
+                    var htlc_address = hedgehog.makeAddress( htlc_scripts );
 
                     //create tx1 to send all the funds into the htlc
                     var tx1 = tapscript.Tx.create({
@@ -1684,7 +1716,7 @@
                     //its preimage after signing a tx that lets Bob sweep it if he
                     //learns the preimage
                     var alices_revocation_scripts = hedgehog.makeHTLC( chan_id, alices_revocation_hash );
-                    var alices_revocation_address = hedgehog.makeAddress( chan_id, alices_revocation_scripts );
+                    var alices_revocation_address = hedgehog.makeAddress( alices_revocation_scripts );
 
                     //create first_from_htlc_tx to disperse the funds from the htlc to Alice's
                     //revocation_address if Alice discloses her knowledge of the payment preimage
@@ -1722,7 +1754,7 @@
                     var revocation_preimage = hedgehog.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
                     var revocation_hash = await hedgehog.sha256( hedgehog.hexToBytes( revocation_preimage ) );
                     var revocation_scripts = hedgehog.makeHTLC( chan_id, revocation_hash );
-                    var revocation_address = hedgehog.makeAddress( chan_id, revocation_scripts );
+                    var revocation_address = hedgehog.makeAddress( revocation_scripts );
 
                     //create second_from_htlc_tx to move the funds into the revocation addy with a 20 block
                     //timelock if Alice does not disclose her knowledge of the preimage in a timely manner
@@ -2213,11 +2245,11 @@
                     //create the revocation scripts so the recipient can revoke this state later
                     if ( am_alice ) {
                         var latest_scripts = hedgehog.makeAlicesRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].alice_can_revoke.push( [ revocable_address, latest_scripts ] );
                     } else {
                         var latest_scripts = hedgehog.makeBobsRevocationScript( chan_id );
-                        var revocable_address = hedgehog.makeAddress( chan_id, latest_scripts );
+                        var revocable_address = hedgehog.makeAddress( latest_scripts );
                         hedgehog.state[ chan_id ].bob_can_revoke.push( [ revocable_address, latest_scripts ] );
                     }
 
@@ -2237,7 +2269,7 @@
                     //create the htlc
                     var htlc_hash = data[ "htlc_hash" ];
                     var htlc_scripts = hedgehog.makeHTLC( chan_id, htlc_hash );
-                    var htlc_address = hedgehog.makeAddress( chan_id, htlc_scripts );
+                    var htlc_address = hedgehog.makeAddress( htlc_scripts );
 
                     //create tx1 to send all the funds into the htlc
                     var tx1 = tapscript.Tx.create({
@@ -2261,7 +2293,7 @@
                     //its preimage after signing a tx that lets Bob sweep it if he
                     //learns the preimage
                     var alices_revocation_scripts = hedgehog.makeHTLC( chan_id, alices_revocation_hash );
-                    var alices_revocation_address = hedgehog.makeAddress( chan_id, alices_revocation_scripts );
+                    var alices_revocation_address = hedgehog.makeAddress( alices_revocation_scripts );
 
                     //create first_from_htlc_tx to disperse the funds from the htlc to Alice's
                     //revocation_address if Alice discloses her knowledge of the payment preimage
@@ -2298,7 +2330,7 @@
                     //she learns the preimage
                     var revocation_hash = data[ "revocation_hash" ];
                     var revocation_scripts = hedgehog.makeHTLC( chan_id, revocation_hash );
-                    var revocation_address = hedgehog.makeAddress( chan_id, revocation_scripts );
+                    var revocation_address = hedgehog.makeAddress( revocation_scripts );
 
                     //create second_from_htlc_tx to move the funds into the revocation addy after a 20 block
                     //timelock if Alice does not disclose her knowledge of the preimage in a timely manner
@@ -3217,22 +3249,6 @@
                         addy,
                     }
                 },
-                getVin: ( txid, vout, amnt, addy, sequence ) => {
-                    var input = {
-                        txid,
-                        vout,
-                        prevout: {
-                            value: amnt,
-                            scriptPubKey: tapscript.Address.toScriptPubKey( addy ),
-                        },
-                    }
-                    if ( sequence ) input[ "sequence" ] = sequence;
-                    return input;
-                },
-                getVout: ( amnt, addy ) => ({
-                    value: amnt,
-                    scriptPubKey: tapscript.Address.toScriptPubKey( addy ),
-                }),
                 findUtxosWorthMore: amt => {
                     var utxo_ids = JSON.parse( JSON.stringify( Object.keys( l2generator.state.utxos ) ) );
                     utxo_ids = l2generator.shuffle( utxo_ids );
@@ -3251,6 +3267,28 @@
                     }
                     return loop();
                 },
+            }
+        </script>
+        <script>
+            async function getNote( item ) {
+                async function isNoteSetYet( note_i_seek ) {
+                    return new Promise( function( resolve, reject ) {
+                        if ( !note_i_seek ) {
+                            setTimeout( async function() {
+                                var msg = await isNoteSetYet( sessionStorage[ item ] );
+                                resolve( msg );
+                            }, 100 );
+                        } else {
+                            resolve( note_i_seek );
+                        }
+                    });
+                }
+                async function getTimeoutData() {
+                    var note_i_seek = await isNoteSetYet( sessionStorage[ item ] );
+                    return note_i_seek;
+                }
+                var returnable = await getTimeoutData();
+                return returnable;
             }
         </script>
         <style>
@@ -3353,11 +3391,14 @@
             <p><button class="deposit_to_l2_btn">Make a deposit</button></p>
         </div>
         <div class="deposit_to_l2 hidden">
-            <p>Maximum allowed deposit:</p>
-            <p><span class="max_allowed_deposit">loading...</span> sats</p>
-            <p>Enter whatever amount of sats you want to deposit</p>
-            <p><input class="amount_to_deposit" value="10000"></p>
-            <p><button class="submit_deposit_amount">Submit</button></p>
+            <p class="cost_of_deposit_invoice_loading hidden">loading...</p>
+            <div class="unhidden_deposit_to_l2">
+                <p>Maximum allowed deposit:</p>
+                <p><span class="max_allowed_deposit">loading...</span> sats</p>
+                <p>Enter whatever amount of sats you want to deposit</p>
+                <p><input class="amount_to_deposit" value="10000"></p>
+                <p><button class="submit_deposit_amount">Submit</button></p>
+            </div>
         </div>
         <div class="pay_deposit_cost hidden">
             <p>There is a cost to deposit to this L2, to prevent spam. Please pay this invoice.</p>
@@ -3411,7 +3452,7 @@
                 var url = window.location.protocol + "//" + window.location.hostname + window.location.pathname + `?layer2=${l2id}&name=${name}`;
                 $( '.show_operator_stats .l2_name' ).innerText = l2.name;
                 $( '.show_operator_stats .l2_link' ).innerText = url;
-                operatorStatsLoop();
+                operatorInit();
                 showPage( `show_operator_stats` );
             }
             if ( $_GET[ "layer2" ] && $_GET[ "name" ] ) {
@@ -3435,14 +3476,14 @@
                     var l2_id = Object.keys( l2generator.state.l2s )[ 0 ];
                     var nwc_string = l2generator.state.l2s[ l2_id ].nwc_string;
                     var nwc_info = nwcjs.processNWCstring( nwc_string );
-                    var delay_tolerance = 6;
+                    var delay_tolerance = 10;
                     var nwc_balance_info = await nwcjs.getBalance( nwc_info, delay_tolerance );
                     console.log( nwc_balance_info );
                     var nwc_balance = Math.floor( nwc_balance_info.result.balance / 1000 );
                     $( '.ln_balance' ).innerText = nwc_balance;
                 } catch ( e ) {}
                 await hedgehog.waitSomeSeconds( 5 );
-                operatorInit();
+                operatorStatsLoop();
             }
             var operatorInit = async () => {
                 var handled_messages = [];
@@ -3503,45 +3544,148 @@
                         var cost_of_deposit = 5;
                         var amnt = cost_of_deposit;
                         var desc = "depositing to L2 (paying cost)";
-                        var delay_tolerance = 6;
+                        var delay_tolerance = 10;
                         var invoice_info = await nwcjs.makeInvoice( nwc_info, amnt, desc, delay_tolerance );
+                        if ( invoice_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_info )}` );
+                        if ( "result_type" in invoice_info && invoice_info[ "result_type" ] !== "make_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_info )}` );
+                        if ( "error" in invoice_info && invoice_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_info[ "error" ] )} -- please try again` );
                         var invoice = invoice_info.result.invoice || invoice_info.result.bolt11;
+                        var desc = "depositing to L2 (actual deposit)";
+                        var deposit_invoice_info = await nwcjs.makeInvoice( nwc_info, deposit_amount, desc, delay_tolerance );
+                        if ( deposit_invoice_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( deposit_invoice_info )}` );
+                        if ( "result_type" in deposit_invoice_info && deposit_invoice_info[ "result_type" ] !== "make_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( deposit_invoice_info )}` );
+                        if ( "error" in deposit_invoice_info && deposit_invoice_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( deposit_invoice_info[ "error" ] )} -- please try again` );
+                        var deposit_invoice = deposit_invoice_info.result.invoice || deposit_invoice_info.result.bolt11;
+                        var papa_swap_hash = hedgehog.getInvoicePmthash( deposit_invoice );
+                        var utxo_ids_for_papa_swap = l2generator.findUtxosWorthMore( deposit_amount );
+                        var utxos_for_papa_swap = [];
+                        utxo_ids_for_papa_swap.forEach( utxo_id => utxos_for_papa_swap.push( utxos[ utxo_id ] ) );
+                        var public_utxos_for_papa_swap = [];
+                        utxos_for_papa_swap.forEach( utxo => {
+                            public_utxos_for_papa_swap.push({
+                                txid: utxo[ "txid" ],
+                                vout: utxo[ "vout" ],
+                                amnt: utxo[ "amnt" ],
+                                addy: utxo[ "addy" ]
+                            });
+                        });
+                        var push_all_funds_to_counterparty = true;
+                        var alices_pubkey = json.msg.pubkey;
+                        var alices_hash = json.msg.hash;
+                        //TODO: ensure alices_pubkey_and_hash are valid
+                        var alices_pubkey_and_hash = [ alices_pubkey, alices_hash ];
+                        var change_address = l2generator.state.latest_addy.addy;
+                        var [ chan_id, sigs_and_stuff, funding_txhex, utxos_created ] = await hedgehog.openChannel( push_all_funds_to_counterparty, alices_pubkey_and_hash, papa_swap_hash, utxos_for_papa_swap, deposit_amount, change_address );
+                        var bobs_pubkey = hedgehog.state[ chan_id ].bobs_pubkey;
+                        var secret = super_nostr.getPrivkey();
                         var msg = JSON.stringify({
                             type: "i_want_to_deposit_response",
                             msg: {
                                 cost_of_deposit,
                                 invoice,
+                                deposit_invoice,
+                                public_utxos_for_papa_swap,
+                                change_address,
+                                secret,
+                                bobs_pubkey,
                             }
                         });
                         var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
                         var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
                         super_nostr.sendEvent( event, socket );
-                        var deposit_invoice = null;
+                        var sig_for_papa_swap = await getNote( secret );
+                        sessionStorage.removeItem( secret );
+
+                        //prepare to validate Alice's signature
+
+                        var multisig_script = [ alices_pubkey, "OP_CHECKSIGVERIFY", bobs_pubkey, "OP_CHECKSIG" ];
+                        var multisig_tree = [ tapscript.Tap.encodeScript( multisig_script ) ];
+                        var multisig = hedgehog.makeAddress( [ multisig_script ] );
+                        //we are using a papa swap so a transaction needs to go from the multisig to a
+                        //revocable address; and a 2 week timelock from the revocable address should give
+                        //the funds back to Bob; but if he revokes this path, then of course Alice can
+                        //sweep it if Bob tries to use it, because she will have the revocation preimage.
+                        var vin = [];
+                        var sum = 0;
+                        utxos_for_papa_swap.forEach( utxo => {
+                            sum = sum + utxo.amnt;
+                            vin.push( hedgehog.getVin( utxo.txid, utxo.vout, utxo.amnt, utxo.addy ) );
+                        });
+                        var papa_swap_funding_tx = tapscript.Tx.create({
+                            vin,
+                            vout: [hedgehog.getVout( deposit_amount, multisig )],
+                        });
+                        var deposit_mining_txfee = 500;
+                        if ( sum - deposit_amount > 330 ) papa_swap_funding_tx.vout.push( hedgehog.getVout( sum - deposit_amount - deposit_mining_txfee, change_address ) );
+                        var txid = tapscript.Tx.util.getTxid( papa_swap_funding_tx );
+                        var vout = 0;
+                        var amnt = deposit_amount;
+
+                        //prepare the revocable address
+
+                        var revocable_scripts = [
+                            [
+                                2016,
+                                "OP_CHECKSEQUENCEVERIFY",
+                                "OP_DROP",
+                                bobs_pubkey,
+                                "OP_CHECKSIG",
+                            ],
+                            [
+                                "OP_SIZE",
+                                32,
+                                "OP_EQUALVERIFY",
+                                "OP_SHA256",
+                                papa_swap_hash,
+                                "OP_EQUALVERIFY",
+                                alices_pubkey,
+                                "OP_CHECKSIG",
+                            ]
+                        ];
+                        var revocable_address = hedgehog.makeAddress( revocable_scripts );
+
+                        //actually validate Alice's signature
+
+                        var txfee = 500;
+                        var multisig_to_revocable_addy_tx = tapscript.Tx.create({
+                            vin: [hedgehog.getVin( txid, 0, deposit_amount, multisig )],
+                            vout: [hedgehog.getVout( deposit_amount - txfee, revocable_address )],
+                        });
+
+                        var sighash = tapscript.Signer.taproot.hash( multisig_to_revocable_addy_tx, 0, { extension: multisig_tree[ 0 ] }).hex
+                        var sig_is_valid = await nobleSecp256k1.schnorr.verify( sig_for_papa_swap, sighash, alices_pubkey );
+
+                        if ( !sig_is_valid ) {
+                            delete hedgehog.state[ chan_id ];
+                            return;
+                        }
+
+                        //start listening for the cost_of_deposit invoice to be paid
                         var loop = async () => {
-                            if ( !deposit_invoice ) {
-                                var desc = "depositing to L2 (actual deposit)";
-                                var deposit_invoice_info = await nwcjs.makeInvoice( nwc_info, deposit_amount, desc, delay_tolerance );
-                                deposit_invoice = deposit_invoice_info.result.invoice || deposit_invoice_info.result.bolt11;
-                            }
+                            //TODO: if Alice doesn't pay the invoice and it expires, use
+                            //sig_for_papa_swap to sweep Bob's funds from the multisig
                             console.log( 'checking invoice status' );
                             var invoice_status_info = await nwcjs.checkInvoice( nwc_info, invoice, delay_tolerance );
                             //TODO: ensure this doesn't fire until deposit_invoice exists
+                            if ( invoice_status_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                            if ( "result_type" in invoice_status_info && invoice_status_info[ "result_type" ] !== "lookup_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                            if ( "error" in invoice_status_info && invoice_status_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_status_info[ "error" ] )} -- please try again` );
+                            console.log( invoice_status_info );
                             if ( invoice_status_info.result.settled_at ) {
-                                var push_all_funds_to_counterparty = true;
-                                var alices_pubkey = json.msg.pubkey;
-                                var alices_hash = json.msg.hash;
-                                console.log( alices_pubkey, alices_hash, json );
-                                var alices_pubkey_and_hash = [ alices_pubkey, alices_hash ];
-                                var papa_swap_hash = hedgehog.getInvoicePmthash( deposit_invoice );
-                                var utxo_ids_for_papa_swap = l2generator.findUtxosWorthMore( deposit_amount );
-                                var utxos_for_papa_swap = [];
-                                utxo_ids_for_papa_swap.forEach( utxo_id => utxos_for_papa_swap.push( utxos[ utxo_id ] ) );
-                                hedgehog.openChannel( push_all_funds_to_counterparty, alices_pubkey_and_hash, papa_swap_hash, utxos_for_papa_swap );
                                 $( '.income' ).innerText = Number( $( '.income' ).innerText ) + cost_of_deposit;
+                                console.log( 'broadcast this:' );
+                                console.log( funding_txhex );
+                                utxo_ids_for_papa_swap.forEach( utxo_id => {
+                                    delete l2generator.state.utxos[ utxo_id ];
+                                    if ( utxos_created && utxos_created[ 0 ][ "addy" ] === l2generator.state.latest_addy.addy ) {
+                                        l2generator.makeUTXO( utxos_created[ 0 ][ "txid" ], utxos_created[ 0 ][ "vout" ], utxos_created[ 0 ][ "amnt" ], utxos_created[ 0 ][ "addy" ], l2generator.state.latest_addy.skey );
+                                    }
+                                });
                                 var msg = JSON.stringify({
                                     type: "cost_of_deposit_paid",
                                     msg: {
-                                        deposit_invoice,
+                                        funding_txhex,
+                                        sigs_and_stuff,
                                     }
                                 });
                                 var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
@@ -3554,9 +3698,13 @@
                         }
                         await loop();
                     }
+                    if ( json[ "type" ] === "sig_for_papa_swap" ) {
+                        var secret = json.msg.secret;
+                        sessionStorage[ secret ] = json.msg.sig;
+                        setTimeout( () => {sessionStorage.removeItem( secret );}, 5000 );
+                    }
                 }
                 await super_nostr.newPermanentConnection( relay, listen, handleEvent );
-                console.log( 'connected!' );
                 operatorStatsLoop();
             }
             var depositorInit = async () => {
@@ -3586,19 +3734,116 @@
                     if ( event.kind === 4 ) event.content = await super_nostr.decrypt( nostr_privkey, event.pubkey, event.content );
                     var json = JSON.parse( event.content );
                     if ( !json ) return;
+                    var recipient = $_GET[ "layer2" ];
+                    if ( event.pubkey !== recipient ) return;
                     console.log( json );
                     if ( json[ "type" ] === "l1_balance_query_response" ) {
                         $( '.max_allowed_deposit' ).innerText = `${json.msg.l1_balance}`;
                     }
                     if ( json[ "type" ] === "i_want_to_deposit_response" ) {
+                        if ( sessionStorage[ "txid_and_hash_for_confirming_papa_swap" ] ) return;
                         $( '.spam_prevention_cost' ).innerText = json.msg.cost_of_deposit;
                         $( '.spam_prevention_invoice' ).innerText = json.msg.invoice;
+                        var deposit_amount = Number( $( '.amount_to_deposit' ).value );
+                        $( '.deposit_amount' ).innerText = deposit_amount;
+                        $( '.deposit_invoice' ).innerText = json.msg.deposit_invoice;
+                        var papa_swap_hash = hedgehog.getInvoicePmthash( json.msg.deposit_invoice );
+                        var utxos_for_papa_swap = json.msg.public_utxos_for_papa_swap;
+                        var change_address = json.msg.change_address;
+                        var secret = json.msg.secret;
+                        var bobs_pubkey = json.msg.bobs_pubkey;
+                        var alices_pubkey = Object.keys( hedgehog.keypairs )[ 0 ];
+                        var alices_privkey = hedgehog.keypairs[ alices_pubkey ][ "privkey" ];
+                        var multisig_script = [ alices_pubkey, "OP_CHECKSIGVERIFY", bobs_pubkey, "OP_CHECKSIG" ];
+                        var multisig_tree = [ tapscript.Tap.encodeScript( multisig_script ) ];
+                        var multisig = hedgehog.makeAddress( [ multisig_script ] );
+                        //we are using a papa swap so a transaction needs to go from the multisig to a
+                        //revocable address; and a 2 week timelock from the revocable address should give
+                        //the funds back to Bob; but if he revokes this path, then of course Alice can
+                        //sweep it if Bob tries to use it, because she will have the revocation preimage.
+                        var vin = [];
+                        var sum = 0;
+                        utxos_for_papa_swap.forEach( utxo => {
+                            sum = sum + utxo.amnt;
+                            vin.push( hedgehog.getVin( utxo.txid, utxo.vout, utxo.amnt, utxo.addy ) );
+                        });
+                        var papa_swap_funding_tx = tapscript.Tx.create({
+                            vin,
+                            vout: [hedgehog.getVout( deposit_amount, multisig )],
+                        });
+                        var deposit_mining_txfee = 500;
+                        if ( sum - deposit_amount > 330 ) papa_swap_funding_tx.vout.push( hedgehog.getVout( sum - deposit_amount - deposit_mining_txfee, change_address ) );
+                        var txid = tapscript.Tx.util.getTxid( papa_swap_funding_tx );
+                        console.log( 78, JSON.stringify( papa_swap_funding_tx ), txid );
+                        var vout = 0;
+                        var amnt = deposit_amount;
+
+                        //prepare the revocable address
+
+                        var revocable_scripts = [
+                            [
+                                2016,
+                                "OP_CHECKSEQUENCEVERIFY",
+                                "OP_DROP",
+                                bobs_pubkey,
+                                "OP_CHECKSIG",
+                            ],
+                            [
+                                "OP_SIZE",
+                                32,
+                                "OP_EQUALVERIFY",
+                                "OP_SHA256",
+                                papa_swap_hash,
+                                "OP_EQUALVERIFY",
+                                alices_pubkey,
+                                "OP_CHECKSIG",
+                            ]
+                        ];
+                        var revocable_address = hedgehog.makeAddress( revocable_scripts );
+
+                        //give a sig to Bob sending the money from the multisig to the
+                        //revocable address
+
+                        var txfee = 500;
+                        var multisig_to_revocable_addy_tx = tapscript.Tx.create({
+                            vin: [hedgehog.getVin( txid, 0, deposit_amount, multisig )],
+                            vout: [hedgehog.getVout( deposit_amount - txfee, revocable_address )],
+                        });
+
+                        var sig = tapscript.Signer.taproot.sign( alices_privkey, multisig_to_revocable_addy_tx, 0, { extension: multisig_tree[ 0 ] }).hex;
+                        var msg = JSON.stringify({
+                            type: "sig_for_papa_swap",
+                            msg: {
+                                sig,
+                                secret,
+                            }
+                        });
+                        var recipient = $_GET[ "layer2" ];
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
+                        if ( !sessionStorage[ "txid_and_hash_for_confirming_papa_swap" ] ) sessionStorage[ "txid_and_hash_for_confirming_papa_swap" ] = JSON.stringify( [ txid, papa_swap_hash ] );
                         showPage( 'pay_deposit_cost' );
                     }
                     if ( json[ "type" ] === "cost_of_deposit_paid" ) {
-                        $( '.deposit_amount' ).innerText = $( '.amount_to_deposit' ).value;
-                        $( '.deposit_invoice' ).innerText = json.msg.deposit_invoice;
+                        var [ txid, papa_swap_hash ] = JSON.parse( sessionStorage[ "txid_and_hash_for_confirming_papa_swap" ] );
+                        delete sessionStorage[ "txid_and_hash_for_confirming_papa_swap" ];
+                        var funding_txhex = json.msg.funding_txhex;
+                        var actual_txid = tapscript.Tx.util.getTxid( funding_txhex );
+                        var expected_txid = txid;
+                        if ( actual_txid !== expected_txid ) return alert( `aborting because Bob tried to scam you: ${actual_txid}, ${expected_txid}` );
+                        var sigs_and_stuff = json.msg.sigs_and_stuff;
+                        //TODO: validate that the funding_txhex is accepted into the mempool
+                        //TODO: validate that the sigs_and_stuff you received uses the
+                        //funding_txid and vout as inputs
+                        //TODO: once the invoice is paid, store the preimage so you can
+                        //penalize Bob if he tries to sweep the funds from the multisig
+                        //using the sig_for_papa_swap
+                        hedgehog.openChannel( null, null, null, null, null, null, sigs_and_stuff );
+                        console.log( 'broadcast this:' );
+                        console.log( funding_txhex );
                         showPage( 'make_deposit' );
+                        alert( `only click ok once this tx confirms, or click ok immediately if you are ok with a 0-conf channel: ${txid}` );
                     }
                 }
                 var socket_id = await super_nostr.newPermanentConnection( relay, listen, handleEvent );
@@ -3622,7 +3867,8 @@
             }
             $( '.submit_deposit_amount' ).onclick = async () => {
                 var deposit_amount = Number( $( '.amount_to_deposit' ).value );
-                console.log( deposit_amount );
+                $( '.cost_of_deposit_invoice_loading' ).classList.remove( "hidden" );
+                $( '.unhidden_deposit_to_l2' ).classList.add( "hidden" );
                 var depositor_id = Object.keys( l2generator.state.depositor_data )[ 0 ];
                 var nostr_privkey = l2generator.state.depositor_data[ depositor_id ][ "nostr_privkey" ];
                 var nostr_pubkey = l2generator.state.depositor_data[ depositor_id ][ "nostr_pubkey" ];
