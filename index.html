@@ -3,20 +3,16 @@
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, user-scalable=no">
-<!--
-        <script src="https://unpkg.com/@cmdcode/tapscript"></script>
-        <script src="https://supertestnet.github.io/hedgehog/noble-secp256k1.js"></script>
-        <script src="https://supertestnet.github.io/hedgehog/rmd160.js"></script>
-        <script src="file:///home/supertestnet/hedgehog_project/tapscript.js"></script>
-        <script src="file:///home/supertestnet/hedgehog_project/noble-secp256k1.js"></script>
-        <script src="file:///home/supertestnet/hedgehog_project/rmd160.js"></script>
--->
-        <script src="https://supertestnet.github.io/hedgehog-advanced/tapscript.js"></script>
         <script src="https://supertestnet.github.io/hedgehog-advanced/noble-secp256k1.js"></script>
+        <script src="https://supertestnet.github.io/hedgehog-advanced/tapscript.js"></script>
         <script src="https://supertestnet.github.io/hedgehog-advanced/rmd160.js"></script>
+        <script src="https://supertestnet.github.io/bitcoin-chess/js/bolt11.js"></script>
+        <script src="https://supertestnet.github.io/nwcjs/nwcjs.js"></script>
+        <script src="https://bundle.run/browserify-cipher@1.0.1"></script>
+        <script src="https://bundle.run/bech32@2.0.0"></script>
         <script>
             var hedgehog = {
-                network: "regtest",
+                network: "testnet",
                 state: {},
                 keypairs: {},
                 state_obj: {
@@ -59,6 +55,13 @@
                     var num = num.toString() + "000";
                     num = Number( num );
                     return new Promise( resolve => setTimeout( resolve, num ) );
+                },
+                getInvoicePmthash: invoice => {
+                    var decoded = bolt11.decode( invoice );
+                    var i; for ( i=0; i<decoded[ "tags" ].length; i++ ) {
+                        if ( decoded[ "tags" ][ i ][ "tagName" ] == "payment_hash" ) var pmthash = decoded[ "tags" ][ i ][ "data" ].toString();
+                    }
+                    return pmthash;
                 },
                 isValidHex: hex => {
                     if ( !hex ) return;
@@ -112,10 +115,10 @@
                     [ "OP_SIZE", 32, "OP_EQUALVERIFY", "OP_SHA256", hash, "OP_EQUALVERIFY", hedgehog.state[ chan_id ].alices_pubkey, "OP_CHECKSIGVERIFY", hedgehog.state[ chan_id ].bobs_pubkey, "OP_CHECKSIG" ],
                     [ hedgehog.state[ chan_id ].alices_pubkey, "OP_CHECKSIGVERIFY", hedgehog.state[ chan_id ].bobs_pubkey, "OP_CHECKSIG" ],
                 ]),
-                openChannel: async push_all_funds_to_counterparty => {
+                openChannel: async ( push_all_funds_to_counterparty, alices_pubkey_and_hash = null, papa_swap_hash = null, utxos_for_papa_swap = null ) => {
                     //there are three ways to open a channel:
                     //the first way is as Bob, opening a channel to Alice unilaterally
-                    //the code for that after this "if" statement because a
+                    //the code for that appears after this "if" statement (not in it) because a
                     //unilateral channel open requires pushing all funds to your counterparty
                     //the second way is as Alice, accepting a channel Bob already unilaterally opened
                     //the third way is as Alice, opening a new channel cooperatively with Bob
@@ -190,7 +193,7 @@
                     hedgehog.state[ chan_id ] = hedgehog.state_obj;
                     hedgehog.state[ chan_id ].bobs_privkey = hedgehog.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
                     hedgehog.state[ chan_id ].bobs_pubkey = nobleSecp256k1.getPublicKey( hedgehog.state[ chan_id ].bobs_privkey, true ).substring( 2 );
-                    var alices_pubkey_and_hash = JSON.parse( prompt( `Enter Alice's pubkey and revocation hash` ) );
+                    if ( !alices_pubkey_and_hash ) alices_pubkey_and_hash = JSON.parse( prompt( `Enter Alice's pubkey and revocation hash` ) );
                     hedgehog.state[ chan_id ].alices_pubkey = alices_pubkey_and_hash[ 0 ];
                     hedgehog.state[ chan_id ].alices_revocation_hashes.push( alices_pubkey_and_hash[ 1 ] );
                     hedgehog.state[ chan_id ].alices_address = tapscript.Address.fromScriptPubKey( [ "OP_1", hedgehog.state[ chan_id ].alices_pubkey ], hedgehog.network );
@@ -200,6 +203,59 @@
                     hedgehog.state[ chan_id ].multisig_script = multisig_script;
                     hedgehog.state[ chan_id ].multisig_tree = multisig_tree;
                     hedgehog.state[ chan_id ].multisig = hedgehog.makeAddress( chan_id, [ multisig_script ] );
+                    if ( papa_swap_hash ) {
+                        console.log( hedgehog.state[ chan_id ].multisig, papa_swap_hash, utxos_for_papa_swap );
+                        var vin = [];
+                        utxos_for_papa_swap.forEach( utxo => {
+                            vin.
+                        });
+                        var papa_swap_funding_tx = tapscript.Tx.create({
+                            vin,
+                            vout,
+                        });
+                        return;
+                        //if we are using a papa swap, a transaction needs to go from the multisig to a
+                        //revocable address; and a 2 week timelock from the revocable address should give
+                        //the funds back to Bob; but if he revokes this path, then of course Alice can
+                        //sweep it if Bob tries to use it, because she will have the revocation preimage.
+
+                        //also note: before proceeding, Bob needs to tell Alice what papa swap hash he
+                        //will use (this should be in a lightning invoice he gives to her) and a sig that
+                        //sends the money to the revocable address to Alice, and he must get *from* her a
+                        //transaction sending the money to the revocable address from the multisig
+                        var multisig_revocation_script = "test";
+
+                        var txid = prompt( `send some sats to this address and give the txid:\n\n${hedgehog.state[ chan_id ].multisig}` );
+                        var vout = Number( prompt( `and the vout` ) );
+                        var amnt = Number( prompt( `and the amount` ) );
+                        hedgehog.state[ chan_id ].multisig_utxo_info = {
+                            txid,
+                            vout,
+                            amnt,
+                        }
+
+                        //temporarily pretend the entire balance is on Bob's side so he can
+                        //send it to Alice using the regular send command
+                        hedgehog.state[ chan_id ].balances = [ 0, amnt ];
+
+                        //prepare the transaction that moves all funds to Alice's side
+                        var opening = true;
+                        var sigs_and_stuff = hedgehog.send( chan_id, amnt - 500 - 500, opening );
+                        sigs_and_stuff[ "amnt" ] = amnt;
+                        console.log( "send this data to your recipient:" );
+                        console.log( JSON.stringify( sigs_and_stuff ) );
+
+                        //update the state to reflect alice's ability to withdraw 100%
+                        hedgehog.state[ chan_id ].balances = [ amnt, 0 ];
+                        hedgehog.state[ chan_id ].balances_before_most_recent_receive = [ amnt, 0 ];
+
+                        //update the send/receive/close buttons to use this channel
+                        $( '.send_btn' ).onclick = () => {console.log( "send this data to your recipient:" );console.log( JSON.stringify( hedgehog.send( chan_id ) ) );}
+                        $( '.receive_btn' ).onclick = () => {hedgehog.receive();}
+                        $( '.close_channel' ).onclick = () => {hedgehog.closeChannel( chan_id );}
+                        alert( `yay, your channel is funded! send your counterparty the info in your console` );
+                        return;
+                    }
                     console.log( "address:", hedgehog.state[ chan_id ].multisig );
 
                     var txid = prompt( `send some sats to this address and give the txid:\n\n${hedgehog.state[ chan_id ].multisig}` );
@@ -2864,6 +2920,339 @@
                 },
             }
         </script>
+        <script>
+            // dependencies:
+            // https://bundle.run/noble-secp256k1@1.2.14
+            var super_nostr = {
+                sockets: {},
+                hexToBytes: hex => Uint8Array.from( hex.match( /.{1,2}/g ).map( byte => parseInt( byte, 16 ) ) ),
+                bytesToHex: bytes => bytes.reduce( ( str, byte ) => str + byte.toString( 16 ).padStart( 2, "0" ), "" ),
+                base64ToBytes: str => {
+                    var raw = atob( str );
+                    var result = [];
+                    var i; for ( i=0; i<raw.length; i++ ) result.push( raw.charCodeAt( i ) );
+                    return new Uint8Array( result );
+                },
+                base64ToHex: str => {
+                    var raw = atob( str );
+                    var result = '';
+                    var i; for ( i=0; i<raw.length; i++ ) {
+                        var hex = raw.charCodeAt( i ).toString( 16 );
+                        result += hex.length % 2 ? '0' + hex : hex;
+                    }
+                    return result.toLowerCase();
+                },
+                hexToBase64: hex => btoa( hex.match( /\w{2}/g ).map( a => String.fromCharCode( parseInt( a, 16 ) ) ).join( "" ) ),
+                getPrivkey: () => super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() ),
+                getPubkey: privkey => nobleSecp256k1.getPublicKey( privkey, true ).substring( 2 ),
+                sha256: async text_or_bytes => {if ( typeof text_or_bytes === "string" ) text_or_bytes = ( new TextEncoder().encode( text_or_bytes ) );return super_nostr.bytesToHex( await nobleSecp256k1.utils.sha256( text_or_bytes ) )},
+                waitSomeSeconds: num => {
+                    var num = num.toString() + "000";
+                    num = Number( num );
+                    return new Promise( resolve => setTimeout( resolve, num ) );
+                },
+                getEvents: async ( relay_or_socket, ids, authors, kinds, until, since, limit, etags, ptags ) => {
+                    var socket_is_permanent = false;
+                    if ( typeof relay_or_socket !== "string" ) socket_is_permanent = true;
+                    if ( typeof relay_or_socket === "string" ) var socket = new WebSocket( relay_or_socket );
+                    else var socket = relay_or_socket;
+                    var events = [];
+                    var opened = false;
+                    if ( socket_is_permanent ) {
+                        var subId = super_nostr.getPrivkey().substring( 0, 16 );
+                        var filter  = {}
+                        if ( ids ) filter.ids = ids;
+                        if ( authors ) filter.authors = authors;
+                        if ( kinds ) filter.kinds = kinds;
+                        if ( until ) filter.until = until;
+                        if ( since ) filter.since = since;
+                        if ( limit ) filter.limit = limit;
+                        if ( etags ) filter[ "#e" ] = etags;
+                        if ( ptags ) filter[ "#p" ] = ptags;
+                        var subscription = [ "REQ", subId, filter ];
+                        socket.send( JSON.stringify( subscription ) );
+                        return;
+                    }
+                    socket.addEventListener( 'message', async function( message ) {
+                        var [ type, subId, event ] = JSON.parse( message.data );
+                        var { kind, content } = event || {}
+                        if ( !event || event === true ) return;
+                        events.push( event );
+                    });
+                    socket.addEventListener( 'open', async function( e ) {
+                        opened = true;
+                        var subId = super_nostr.getPrivkey().substring( 0, 16 );
+                        var filter  = {}
+                        if ( ids ) filter.ids = ids;
+                        if ( authors ) filter.authors = authors;
+                        if ( kinds ) filter.kinds = kinds;
+                        if ( until ) filter.until = until;
+                        if ( since ) filter.since = since;
+                        if ( limit ) filter.limit = limit;
+                        if ( etags ) filter[ "#e" ] = etags;
+                        if ( ptags ) filter[ "#p" ] = ptags;
+                        var subscription = [ "REQ", subId, filter ];
+                        socket.send( JSON.stringify( subscription ) );
+                    });
+                    var loop = async () => {
+                        if ( !opened ) {
+                            await super_nostr.waitSomeSeconds( 1 );
+                            return await loop();
+                        }
+                        var len = events.length;
+                        await super_nostr.waitSomeSeconds( 1 );
+                        if ( len !== events.length ) return await loop();
+                        socket.close();
+                        return events;
+                    }
+                    return await loop();
+                },
+                prepEvent: async ( privkey, msg, kind, tags ) => {
+                    pubkey = super_nostr.getPubkey( privkey );
+                    if ( !tags ) tags = [];
+                    var event = {
+                        "content": msg,
+                        "created_at": Math.floor( Date.now() / 1000 ),
+                        "kind": kind,
+                        "tags": tags,
+                        "pubkey": pubkey,
+                    }
+                    var signedEvent = await super_nostr.getSignedEvent( event, privkey );
+                    return signedEvent;
+                },
+                sendEvent: ( event, relay_or_socket ) => {
+                    var socket_is_permanent = false;
+                    if ( typeof relay_or_socket !== "string" ) socket_is_permanent = true;
+                    if ( typeof relay_or_socket === "string" ) var socket = new WebSocket( relay_or_socket );
+                    else var socket = relay_or_socket;
+                    if ( !socket_is_permanent ) {
+                        socket.addEventListener( 'open', async () => {
+                            socket.send( JSON.stringify( [ "EVENT", event ] ) );
+                            setTimeout( () => {socket.close();}, 1000 );
+                        });
+                    } else {
+                        socket.send( JSON.stringify( [ "EVENT", event ] ) );
+                    }
+                    return event.id;
+                },
+                getSignedEvent: async ( event, privkey ) => {
+                    var eventData = JSON.stringify([
+                        0,
+                        event['pubkey'],
+                        event['created_at'],
+                        event['kind'],
+                        event['tags'],
+                        event['content'],
+                    ]);
+                    event.id = await super_nostr.sha256( eventData );
+                    event.sig = await nobleSecp256k1.schnorr.sign( event.id, privkey );
+                    return event;
+                },
+                encrypt: async ( privkey, pubkey, text ) => {
+                    var msg = ( new TextEncoder() ).encode( text );
+                    var iv = window.crypto.getRandomValues( new Uint8Array( 16 ) );
+                    var key_raw = super_nostr.hexToBytes( nobleSecp256k1.getSharedSecret( privkey, '02' + pubkey, true ).substring( 2 ) );
+                    var key = await window.crypto.subtle.importKey(
+                        "raw",
+                        key_raw,
+                        "AES-CBC",
+                        false,
+                        [ "encrypt", "decrypt" ],
+                    );
+                    var emsg = await window.crypto.subtle.encrypt(
+                        {
+                            name: "AES-CBC",
+                            iv,
+                        },
+                        key,
+                        msg,
+                    )
+                    emsg = new Uint8Array( emsg );
+                    var arr = emsg;
+                    emsg = super_nostr.hexToBase64( super_nostr.bytesToHex( emsg ) ) + "?iv=" + btoa( String.fromCharCode.apply( null, iv ) );
+                    return emsg;
+                },
+                decrypt: async ( privkey, pubkey, ciphertext ) => {
+                    var [ emsg, iv ] = ciphertext.split( "?iv=" );
+                    var key_raw = super_nostr.hexToBytes( nobleSecp256k1.getSharedSecret( privkey, '02' + pubkey, true ).substring( 2 ) );
+                    var key = await window.crypto.subtle.importKey(
+                        "raw",
+                        key_raw,
+                        "AES-CBC",
+                        false,
+                        [ "encrypt", "decrypt" ],
+                    );
+                    var decrypted = await window.crypto.subtle.decrypt(
+                        {
+                            name: "AES-CBC",
+                            iv: super_nostr.base64ToBytes( iv ),
+                        },
+                        key,
+                        super_nostr.base64ToBytes( emsg ),
+                    );
+
+                    var msg = ( new TextDecoder() ).decode( decrypted );
+                    return msg;
+                },
+                newPermanentConnection: ( relay, listenFunction, handleFunction ) => {
+                    var socket_id = super_nostr.getPrivkey().substring( 0, 16 );
+                    super_nostr.sockets[ socket_id ] = {socket: null, connection_failure: false}
+                    super_nostr.connectionLoop( 0, relay, socket_id, listenFunction, handleFunction );
+                    return socket_id;
+                },
+                connectionLoop: async ( tries = 0, relay, socket_id, listenFunction, handleFunction ) => {
+                    var socketRetrieverFunction = socket_id => {
+                        return super_nostr.sockets[ socket_id ][ "socket" ];
+                    }
+                    var socketReplacerFunction = ( socket_id, socket ) => {
+                        super_nostr.sockets[ socket_id ][ "socket" ] = socket;
+                        super_nostr.sockets[ socket_id ][ "connection_failure" ] = false;
+                    }
+                    var socketFailureCheckerFunction = socket_id => {
+                        return super_nostr.sockets[ socket_id ][ "connection_failure" ];
+                    }
+                    var socketFailureSetterFunction = socket_id => {
+                        return super_nostr.sockets[ socket_id ][ "connection_failure" ] = true;
+                    }
+                    if ( socketFailureCheckerFunction( socket_id ) ) return alert( `your connection to nostr failed and could not be restarted, please refresh the page` );
+                    var socket = socketRetrieverFunction( socket_id );
+                    if ( !socket ) {
+                        var socket = new WebSocket( relay );
+                        socket.addEventListener( 'message', handleFunction );
+                        socket.addEventListener( 'open', ()=>{listenFunction( socket );} );
+                        socketReplacerFunction( socket_id, socket );
+                    }
+                    if ( socket.readyState === 1 ) {
+                        await super_nostr.waitSomeSeconds( 1 );
+                        return super_nostr.connectionLoop( 0, relay, socket_id, listenFunction, handleFunction );
+                    }
+                    // if there is no connection, check if we are still connecting
+                    // give it two chances to connect if so
+                    if ( socket.readyState === 0 && !tries ) {
+                        await super_nostr.waitSomeSeconds( 1 );
+                        return super_nostr.connectionLoop( 1, relay, socket_id, listenFunction, handleFunction );
+                    }
+                    if ( socket.readyState === 0 && tries ) {
+                        socketFailureSetterFunction( socket_id );
+                        return;
+                    }
+                    // otherwise, it is either closing or closed
+                    // ensure it is closed, then make a new connection
+                    socket.close();
+                    await super_nostr.waitSomeSeconds( 1 );
+                    socket = new WebSocket( relay );
+                    socket.addEventListener( 'message', handleFunction );
+                    socket.addEventListener( 'open', ()=>{listenFunction( socket );} );
+                    socketReplacerFunction( socket_id, socket );
+                    await super_nostr.connectionLoop( 0, relay, socket_id, listenFunction, handleFunction );
+                }
+            }
+            //dependencies:
+            //super_nostr
+            //https://unpkg.com/@cmdcode/tapscript@1.4.0
+            //https://bundle.run/noble-secp256k1@1.2.14
+            var l2generator = {
+                network: "testnet",
+                state: {
+                    l2s: {},
+                    latest_addy: null,
+                    utxos: {},
+                    depositor_data: {},
+                },
+                hexToBytes: hex => Uint8Array.from( hex.match( /.{1,2}/g ).map( byte => parseInt( byte, 16 ) ) ),
+                bytesToHex: bytes => bytes.reduce( ( str, byte ) => str + byte.toString( 16 ).padStart( 2, "0" ), "" ),
+                bigIntToHex: bigint => {return bigint.toString( 16 ).length % 2 ? "0" + bigint.toString( 16 ) : bigint.toString( 16 )},
+                textToHex: text => {
+                    var encoded = new TextEncoder().encode( text );
+                    return Array.from( encoded )
+                        .map( x => x.toString( 16 ).padStart( 2, "0" ) )
+                        .join( "" );
+                },
+                hexToText: hex => {
+                    var bytes = new Uint8Array( Math.ceil( hex.length / 2 ) );
+                    for ( var i = 0; i < hex.length; i++ ) bytes[ i ] = parseInt( hex.substr( i * 2, 2 ), 16 );
+                    var text = new TextDecoder().decode( bytes );
+                    return text;
+                },
+                pubkeyFromTaprootAddress: address => tapscript.Address.toScriptPubKey( address )[ 1 ],
+                add2Pubkeys: ( pubkey1, pubkey2 ) => nobleSecp256k1.Point.fromHex( pubkey1 ).add( nobleSecp256k1.Point.fromHex( pubkey2 ) ).toHex( true ),
+                shuffle: array => {
+                    var currentIndex = array.length, randomIndex;
+                    while ( currentIndex > 0 ) {
+                        randomIndex = Math.floor( Math.random() * currentIndex );
+                        currentIndex--;
+                        [ array[ currentIndex ], array[ randomIndex ] ] = [
+                            array[ randomIndex ], array[ currentIndex ]
+                        ];
+                    }
+                    return array;
+                },
+                nameL2: name => {
+                    var l2_privkey = super_nostr.getPrivkey();
+                    var l2id = super_nostr.getPubkey( l2_privkey );
+                    l2generator.state.l2s[ l2id ] = {
+                        l2_privkey,
+                        name,
+                        nwc_string: null,
+                        claims: {},
+                    }
+                },
+                makeUTXO: ( txid, vout, amnt, addy, skey ) => {
+                    var utxo_id = l2generator.bytesToHex( nobleSecp256k1.utils.randomBytes( 8 ) );
+                    l2generator.state.utxos[ utxo_id ] = {
+                        txid,
+                        vout,
+                        amnt,
+                        addy,
+                        skey,
+                    }
+                    return utxo_id;
+                },
+                makeAddy: () => {
+                    var skey = super_nostr.getPrivkey();
+                    var pkey = super_nostr.getPubkey( skey );
+                    var addy = tapscript.Address.p2tr.fromPubKey( pkey, l2generator.network );
+                    l2generator.state.latest_addy = {
+                        skey,
+                        addy,
+                    }
+                },
+                getVin: ( txid, vout, amnt, addy, sequence ) => {
+                    var input = {
+                        txid,
+                        vout,
+                        prevout: {
+                            value: amnt,
+                            scriptPubKey: tapscript.Address.toScriptPubKey( addy ),
+                        },
+                    }
+                    if ( sequence ) input[ "sequence" ] = sequence;
+                    return input;
+                },
+                getVout: ( amnt, addy ) => ({
+                    value: amnt,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( addy ),
+                }),
+                findUtxosWorthMore: amt => {
+                    var utxo_ids = JSON.parse( JSON.stringify( Object.keys( l2generator.state.utxos ) ) );
+                    utxo_ids = l2generator.shuffle( utxo_ids );
+                    var utxos_to_return = [];
+                    var loop = () => {
+                        if ( !utxo_ids.length ) return "insufficient";
+                        utxo_ids.forEach( ( utxo_id, index ) => {
+                            var utxo = l2generator.state.utxos[ utxo_id ];
+                            utxos_to_return.push( utxo_id );
+                            utxo_ids.splice( index, 1 );
+                        });
+                        var sum = 0;
+                        utxos_to_return.forEach( item => sum = sum + l2generator.state.utxos[ item ].amnt );
+                        if ( sum >= amt ) return utxos_to_return;
+                        return loop();
+                    }
+                    return loop();
+                },
+            }
+        </script>
         <style>
             * {
                 box-sizing: border-box;
@@ -2878,6 +3267,7 @@
                 padding: 0;
             }
             body {
+                word-wrap: break-word;
                 margin: 3rem 1rem;
             }
             h1 {
@@ -2893,6 +3283,9 @@
                 font-size: 1.15rem;
                 border: 1px solid grey;
             }
+            .hidden {
+                display: none !important;
+            }
             @media screen and (max-width: 600px) {
             }
         </style>
@@ -2906,20 +3299,354 @@
         </script>
     </head>
     <body>
-        <script>var push_all_funds_to_counterparty = true; if ( $_GET[ "bob" ] != "true" ) push_all_funds_to_counterparty = false;</script>
-        <h1>Welcome to hedgehog</h1>
-        <p><button class="send_btn">Send</button><button class="receive_btn">Receive</button><br><button onclick="hedgehog.openChannel( push_all_funds_to_counterparty )" class="open_channel">Open channel</button><br><button class="close_channel">Close channel</button><br><button class="send_htlc_btn">Alice sends htlc</button><br><button class="bob_receives_htlc_btn">Bob receives htlc</button></p>
+        <div class="welcome_msg hidden">
+            <h1>L2 Generator</h1>
+            <p>Make your own L2 with these properties:</p>
+            <ol>
+                <li>anyone can deposit sats to your L2, similar to a bank</li>
+                <li>your users can trade with one another cheaply and quickly</li>
+                <li>unlike a bank, any user can unilaterally withdraw their sats</li>
+            </ol>
+            <p>Let's get started!</p>
+            <p><button class="generate_l2">Generate L2</button></p>
+        </div>
+        <div class="name_l2 hidden">
+            <p>Let's begin by naming your L2</p>
+            <p><input class="l2_name"></p>
+            <p><button class="submit_l2_name">Submit</button></p>
+        </div>
+        <div class="provider_deposit_form hidden">
+            <p>Deposit sats to the following address -- this will be used to lease balanced channels to your users</p>
+            <p class="provider_deposit_address"></p>
+            <p>When you've made your deposit, enter the txid, vout, and amount of your deposit below.</p>
+            <p>Txid</p>
+            <p><input class="provider_deposit_txid" value="abababababababababababababababababababababababababababababababab"></p>
+            <p>Vout</p>
+            <p><input class="provider_deposit_vout" value="0"></p>
+            <p>Amnt</p>
+            <p><input class="provider_deposit_amnt" value="100000"></p>
+            <p><button class="submit_provider_deposit_form">Submit</button></p>
+        </div>
+        <div class="almost_done_generating_l2 hidden">
+            <p>You're almost done! Just add an NWC string below with full permissions and your users will be able to interact with the lightning network</p>
+            <p>NWC string</p>
+            <p><input class="nwc_string" value="nostr+walletconnect://2fbe00e6698e717593febba15a68c37de13869b5c304cb8448fa3c541f8620c4?relay=wss://example.relay.com&secret=370d89b58cb4c38fccd4bba520fbbd9397f3682547b66b23a9a6888fef021038&lud16=example@lightning.com"></p>
+            <p><button class="submit_nwc_string">Submit</button></p>
+        </div>
+        <div class="show_operator_stats hidden">
+            <p>Name of your L2: <span class="l2_name"></span></p>
+            <p>Link to your L2: <span class="l2_link"></span></p>
+            <p>Income: <span class="income">0</span> sats</p>
+            <p>Expenses: <span class="expenses">0</span> sats</p>
+            <p>Layer one balance: <span class="l1_balance">0</span> sats</p>
+            <p>Lightning balance: <span class="ln_balance">0</span> sats</p>
+        </div>
+        <div class="view_l2 hidden">
+            <h1 class="l2_name_to_show_depositors"></h1>
+            <p>This is a bitcoin layer 2 with these properties:</p>
+            <ol>
+                <li>anyone can deposit sats to this L2, similar to a bank</li>
+                <li>every user can trade with one another cheaply and quickly</li>
+                <li>unlike a bank, any user can unilaterally withdraw their sats</li>
+            </ol>
+            <p>Let's get started!</p>
+            <p><button class="deposit_to_l2_btn">Make a deposit</button></p>
+        </div>
+        <div class="deposit_to_l2 hidden">
+            <p>Maximum allowed deposit:</p>
+            <p><span class="max_allowed_deposit">loading...</span> sats</p>
+            <p>Enter whatever amount of sats you want to deposit</p>
+            <p><input class="amount_to_deposit" value="10000"></p>
+            <p><button class="submit_deposit_amount">Submit</button></p>
+        </div>
+        <div class="pay_deposit_cost hidden">
+            <p>There is a cost to deposit to this L2, to prevent spam. Please pay this invoice.</p>
+            <p>Deposit cost: <span class="spam_prevention_cost"></span> sats</p>
+            <p><span class="spam_prevention_invoice"></span></p>
+        </div>
+        <div class="make_deposit hidden">
+            <p>Your cost of deposit was successfully paid, now please make your actual deposit</p>
+            <p>Deposit amount: <span class="deposit_amount"></span> sats</p>
+            <p><span class="deposit_invoice"></span></p>
+        </div>
         <script>
-            if ( $_GET[ "bob" ] != "true" ) {
+            var showPage = page => {
+                $( '.welcome_msg' ).classList.add( "hidden" );
+                $( '.provider_deposit_form' ).classList.add( "hidden" );
+                $( '.almost_done_generating_l2' ).classList.add( "hidden" );
+                $( '.name_l2' ).classList.add( "hidden" );
+                $( '.view_l2' ).classList.add( "hidden" );
+                $( '.show_operator_stats' ).classList.add( "hidden" );
+                $( '.deposit_to_l2' ).classList.add( "hidden" );
+                $( '.pay_deposit_cost' ).classList.add( "hidden" );
+                $( `.${page}` ).classList.remove( "hidden" );
+            }
+            $( '.generate_l2' ).onclick = async () => {
+                showPage( `name_l2` );
+            }
+            $( '.submit_l2_name' ).onclick = async () => {
+                var name = $( '.l2_name' ).value;
+                l2generator.nameL2( name );
+                showPage( `provider_deposit_form` );
+            }
+            var showProviderDepositAddress = () => {
+                if ( !l2generator.state.latest_addy ) l2generator.makeAddy();
+                var addy = l2generator.state.latest_addy[ "addy" ];
+                $( '.provider_deposit_address' ).innerText = addy;
+            }
+            $( '.submit_provider_deposit_form' ).onclick = async () => {
+                var txid = $( '.provider_deposit_txid' ).value;
+                var vout = Number( $( '.provider_deposit_vout' ).value );
+                var amnt = Number( $( '.provider_deposit_amnt' ).value );
+                var addy = $( '.provider_deposit_address' ).innerText;
+                l2generator.makeUTXO( txid, vout, amnt, l2generator.state.latest_addy[ "addy" ], l2generator.state.latest_addy[ "skey" ] );
+                showPage( `almost_done_generating_l2` );
+            }
+            $( '.submit_nwc_string' ).onclick = () => {
+                var l2id = Object.keys( l2generator.state.l2s )[ 0 ];
+                var l2 = l2generator.state.l2s[ l2id ];
+                var nwc_string = $( '.nwc_string' ).value;
+                l2.nwc_string = nwc_string;
+                var name = l2generator.textToHex( l2.name );
+                var url = window.location.protocol + "//" + window.location.hostname + window.location.pathname + `?layer2=${l2id}&name=${name}`;
+                $( '.show_operator_stats .l2_name' ).innerText = l2.name;
+                $( '.show_operator_stats .l2_link' ).innerText = url;
+                operatorStatsLoop();
+                showPage( `show_operator_stats` );
+            }
+            if ( $_GET[ "layer2" ] && $_GET[ "name" ] ) {
+                var name = l2generator.hexToText( $_GET[ "name" ] );
+                showPage( 'view_l2' );
+                $( '.l2_name_to_show_depositors' ).innerText = `Welcome to ` + name;
+                window.onload = () => {depositorInit();}
+            } else {
+                showPage( `welcome_msg` );
+                showProviderDepositAddress();
+            }
+            $( '.deposit_to_l2_btn' ).onclick = async () => {
+                showPage( 'deposit_to_l2' );
+            }
+            var operatorStatsLoop = async () => {
+                try {
+                    var utxos = l2generator.state.utxos;
+                    var utxo_sum = 0;
+                    Object.keys( utxos ).forEach( utxo_id => utxo_sum = utxo_sum + utxos[ utxo_id ][ "amnt" ] );
+                    $( '.l1_balance' ).innerText = utxo_sum;
+                    var l2_id = Object.keys( l2generator.state.l2s )[ 0 ];
+                    var nwc_string = l2generator.state.l2s[ l2_id ].nwc_string;
+                    var nwc_info = nwcjs.processNWCstring( nwc_string );
+                    var delay_tolerance = 6;
+                    var nwc_balance_info = await nwcjs.getBalance( nwc_info, delay_tolerance );
+                    console.log( nwc_balance_info );
+                    var nwc_balance = Math.floor( nwc_balance_info.result.balance / 1000 );
+                    $( '.ln_balance' ).innerText = nwc_balance;
+                } catch ( e ) {}
+                await hedgehog.waitSomeSeconds( 5 );
+                operatorInit();
+            }
+            var operatorInit = async () => {
+                var handled_messages = [];
+                var l2id = Object.keys( l2generator.state.l2s )[ 0 ];
+                var l2 = l2generator.state.l2s[ l2id ];
+                var nostr_privkey = l2.l2_privkey;
+                var nostr_pubkey = l2id;
+                var relay = "wss://nostrue.com";
+                var listen = async ( socket ) => {
+                    var subId = super_nostr.bytesToHex( crypto.getRandomValues( new Uint8Array( 8 ) ) );
+                    var filter  = {}
+                    filter.kinds = [ 4 ];
+                    filter[ "#p" ] = [ nostr_pubkey ];
+                    filter.since = Math.floor( Date.now() / 1000 );
+                    var subscription = [ "REQ", subId, filter ];
+                    socket.send( JSON.stringify( subscription ) );
+                }
+                var handleEvent = async message => {
+                    var [ type, subId, event ] = JSON.parse( message.data );
+                    if ( !event || event === true ) return;
+                    if ( handled_messages.includes( event.id ) ) return;
+                    handled_messages.push( event.id );
+                    if ( event.kind === 4 ) event.content = await super_nostr.decrypt( nostr_privkey, event.pubkey, event.content );
+                    var recipient = event.pubkey;
+                    var json = JSON.parse( event.content );
+                    var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                    var socket = super_nostr.sockets[ socket_id ].socket;
+                    var l2_id = Object.keys( l2generator.state.l2s )[ 0 ];
+                    var nwc_string = l2generator.state.l2s[ l2_id ].nwc_string;
+                    var nwc_info = nwcjs.processNWCstring( nwc_string );
+                    console.log( json );
+                    if ( json[ "type" ] === "l1_balance_query" ) {
+                        var utxos = l2generator.state.utxos;
+                        var utxo_sum = 0;
+                        Object.keys( utxos ).forEach( utxo_id => utxo_sum = utxo_sum + utxos[ utxo_id ][ "amnt" ] );
+                        //keep back 10k sats in reserve for fees
+                        utxo_sum = utxo_sum - 10000;
+                        if ( utxo_sum < 0 ) utxo_sum = 0;
+                        var msg = JSON.stringify({
+                            type: "l1_balance_query_response",
+                            msg: {
+                                l1_balance: utxo_sum,
+                            }
+                        });
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
+                    }
+                    if ( json[ "type" ] === "i_want_to_deposit" ) {
+                        var deposit_amount = Number( json.msg.deposit_amount );
+                        var utxos = l2generator.state.utxos;
+                        var utxo_sum = 0;
+                        Object.keys( utxos ).forEach( utxo_id => utxo_sum = utxo_sum + utxos[ utxo_id ][ "amnt" ] );
+                        //keep back 10k sats in reserve for fees
+                        utxo_sum = utxo_sum - 10000;
+                        if ( utxo_sum < 0 ) utxo_sum = 0;
+                        if ( deposit_amount > utxo_sum || deposit_amount < 330 ) return console.log( 'error, deposit greater than we have or less than 330' );
+                        var cost_of_deposit = 5;
+                        var amnt = cost_of_deposit;
+                        var desc = "depositing to L2 (paying cost)";
+                        var delay_tolerance = 6;
+                        var invoice_info = await nwcjs.makeInvoice( nwc_info, amnt, desc, delay_tolerance );
+                        var invoice = invoice_info.result.invoice || invoice_info.result.bolt11;
+                        var msg = JSON.stringify({
+                            type: "i_want_to_deposit_response",
+                            msg: {
+                                cost_of_deposit,
+                                invoice,
+                            }
+                        });
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
+                        var deposit_invoice = null;
+                        var loop = async () => {
+                            if ( !deposit_invoice ) {
+                                var desc = "depositing to L2 (actual deposit)";
+                                var deposit_invoice_info = await nwcjs.makeInvoice( nwc_info, deposit_amount, desc, delay_tolerance );
+                                deposit_invoice = deposit_invoice_info.result.invoice || deposit_invoice_info.result.bolt11;
+                            }
+                            console.log( 'checking invoice status' );
+                            var invoice_status_info = await nwcjs.checkInvoice( nwc_info, invoice, delay_tolerance );
+                            //TODO: ensure this doesn't fire until deposit_invoice exists
+                            if ( invoice_status_info.result.settled_at ) {
+                                var push_all_funds_to_counterparty = true;
+                                var alices_pubkey = json.msg.pubkey;
+                                var alices_hash = json.msg.hash;
+                                console.log( alices_pubkey, alices_hash, json );
+                                var alices_pubkey_and_hash = [ alices_pubkey, alices_hash ];
+                                var papa_swap_hash = hedgehog.getInvoicePmthash( deposit_invoice );
+                                var utxo_ids_for_papa_swap = l2generator.findUtxosWorthMore( deposit_amount );
+                                var utxos_for_papa_swap = [];
+                                utxo_ids_for_papa_swap.forEach( utxo_id => utxos_for_papa_swap.push( utxos[ utxo_id ] ) );
+                                hedgehog.openChannel( push_all_funds_to_counterparty, alices_pubkey_and_hash, papa_swap_hash, utxos_for_papa_swap );
+                                $( '.income' ).innerText = Number( $( '.income' ).innerText ) + cost_of_deposit;
+                                var msg = JSON.stringify({
+                                    type: "cost_of_deposit_paid",
+                                    msg: {
+                                        deposit_invoice,
+                                    }
+                                });
+                                var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                                var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                                super_nostr.sendEvent( event, socket );
+                                return;
+                            }
+                            await super_nostr.waitSomeSeconds( 5 );
+                            return loop();
+                        }
+                        await loop();
+                    }
+                }
+                await super_nostr.newPermanentConnection( relay, listen, handleEvent );
+                console.log( 'connected!' );
+                operatorStatsLoop();
+            }
+            var depositorInit = async () => {
+                var handled_messages = [];
+                var nostr_privkey = super_nostr.getPrivkey();
+                var nostr_pubkey = super_nostr.getPubkey( nostr_privkey );
+                var depositor_id = super_nostr.getPrivkey().substring( 0, 16 );
+                l2generator.state.depositor_data[ depositor_id ] = {
+                    nostr_privkey,
+                    nostr_pubkey,
+                }
+                var relay = "wss://nostrue.com";
+                var listen = async ( socket ) => {
+                    var subId = super_nostr.bytesToHex( crypto.getRandomValues( new Uint8Array( 8 ) ) );
+                    var filter  = {}
+                    filter.kinds = [ 4 ];
+                    filter[ "#p" ] = [ nostr_pubkey ];
+                    filter.since = Math.floor( Date.now() / 1000 );
+                    var subscription = [ "REQ", subId, filter ];
+                    socket.send( JSON.stringify( subscription ) );
+                }
+                var handleEvent = async message => {
+                    var [ type, subId, event ] = JSON.parse( message.data );
+                    if ( !event || event === true ) return;
+                    if ( handled_messages.includes( event.id ) ) return;
+                    handled_messages.push( event.id );
+                    if ( event.kind === 4 ) event.content = await super_nostr.decrypt( nostr_privkey, event.pubkey, event.content );
+                    var json = JSON.parse( event.content );
+                    if ( !json ) return;
+                    console.log( json );
+                    if ( json[ "type" ] === "l1_balance_query_response" ) {
+                        $( '.max_allowed_deposit' ).innerText = `${json.msg.l1_balance}`;
+                    }
+                    if ( json[ "type" ] === "i_want_to_deposit_response" ) {
+                        $( '.spam_prevention_cost' ).innerText = json.msg.cost_of_deposit;
+                        $( '.spam_prevention_invoice' ).innerText = json.msg.invoice;
+                        showPage( 'pay_deposit_cost' );
+                    }
+                    if ( json[ "type" ] === "cost_of_deposit_paid" ) {
+                        $( '.deposit_amount' ).innerText = $( '.amount_to_deposit' ).value;
+                        $( '.deposit_invoice' ).innerText = json.msg.deposit_invoice;
+                        showPage( 'make_deposit' );
+                    }
+                }
+                var socket_id = await super_nostr.newPermanentConnection( relay, listen, handleEvent );
+                var socket = super_nostr.sockets[ socket_id ].socket;
+                var loop = async () => {
+                    if ( socket.readyState !== 1 ) {
+                        await super_nostr.waitSomeSeconds( 1 );
+                        return loop();
+                    }
+                    return;
+                }
+                await loop();
+                var msg = JSON.stringify({
+                    type: "l1_balance_query",
+                    msg: {}
+                });
+                var recipient = $_GET[ "layer2" ];
+                var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                super_nostr.sendEvent( event, socket );
+            }
+            $( '.submit_deposit_amount' ).onclick = async () => {
+                var deposit_amount = Number( $( '.amount_to_deposit' ).value );
+                console.log( deposit_amount );
+                var depositor_id = Object.keys( l2generator.state.depositor_data )[ 0 ];
+                var nostr_privkey = l2generator.state.depositor_data[ depositor_id ][ "nostr_privkey" ];
+                var nostr_pubkey = l2generator.state.depositor_data[ depositor_id ][ "nostr_pubkey" ];
+                var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                var socket = super_nostr.sockets[ socket_id ].socket;
+                //prepare hedgehog info
                 var privkey = hedgehog.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
                 var pubkey = nobleSecp256k1.getPublicKey( privkey, true ).substring( 2 );
                 var preimage = hedgehog.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() ).substring( 0, 32 );
                 var hash = hedgehog.rmd160( hedgehog.hexToBytes( preimage ) );
                 hedgehog.keypairs[ pubkey ] = {privkey, preimage};
-                console.log( "Your pubkey/hash pair:" );
-                console.log( JSON.stringify( [ pubkey, hash ] ) );
+                var msg = JSON.stringify({
+                    type: "i_want_to_deposit",
+                    msg: {
+                        deposit_amount,
+                        pubkey,
+                        hash,
+                    }
+                });
+                var recipient = $_GET[ "layer2" ];
+                var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                super_nostr.sendEvent( event, socket );
             }
-            $( '.bob_receives_htlc_btn' ).onclick = () => {hedgehog.bobReceivesHTLC();}
         </script>
     </body>
 </html>
