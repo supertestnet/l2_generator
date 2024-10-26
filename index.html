@@ -11,6 +11,7 @@
         <script src="https://bundle.run/browserify-cipher@1.0.1"></script>
         <script src="https://bundle.run/bech32@2.0.0"></script>
         <script>
+            delete sessionStorage[ "txid_and_hash_for_confirming_papa_swap" ];
             var loop_delay = 20;
             var hedgehog = {
                 network: "testnet",
@@ -3062,6 +3063,7 @@
                     //TODO: change the 5 to a 2016
                     console.log( "Wait 5 blocks and broadcast this transaction to finalize the force closure:" );
                     console.log( hedgehog.state[ chan_id ].latest_force_close_txs[ 1 ] );
+                    return [ hedgehog.state[ chan_id ].latest_force_close_txs[ 0 ], hedgehog.state[ chan_id ].latest_force_close_txs[ 1 ] ];
                 },
                 checkIfIncomingHTLCIsSettled: async data => {
                     var data_was_here_originally = data;
@@ -3475,6 +3477,128 @@
                     }
                     return array;
                 },
+                getData: url => {
+                    return new Promise( async function( resolve, reject ) {
+                        function inner_get( url ) {
+                            var xhttp = new XMLHttpRequest();
+                            xhttp.open( "GET", url, true );
+                            xhttp.send();
+                            return xhttp;
+                        }
+                        var data = inner_get( url );
+                        data.onerror = function( e ) {
+                            resolve( "error" );
+                        }
+                        async function isResponseReady() {
+                            return new Promise( function( resolve2, reject ) {
+                                if ( !data.responseText || data.readyState != 4 ) {
+                                    setTimeout( async function() {
+                                        var msg = await isResponseReady();
+                                        resolve2( msg );
+                                    }, 1 );
+                                } else {
+                                    resolve2( data.responseText );
+                                }
+                            });
+                        }
+                        var returnable = await isResponseReady();
+                        resolve( returnable );
+                    });
+                },
+                postData: async ( url, stringified_json, content_type = "", apikey = "" ) => {
+                    var rtext = "";
+                    function inner_post( url, stringified_json, content_type = "", apikey = "" ) {
+                        var xhttp = new XMLHttpRequest();
+                        xhttp.open( "POST", url, true );
+                        if ( content_type ) {
+                            xhttp.setRequestHeader( `Content-Type`, content_type );
+                        }
+                        if ( apikey ) {
+                            xhttp.setRequestHeader( `X-Api-Key`, apikey );
+                        }
+                        xhttp.send( stringified_json );
+                        return xhttp;
+                    }
+                    var data = inner_post( url, stringified_json, content_type, apikey );
+                    data.onerror = function( e ) {
+                        rtext = "error";
+                    }
+                    async function isResponseReady() {
+                        return new Promise( function( resolve, reject ) {
+                            if ( rtext == "error" ) {
+                                resolve( rtext );
+                            }
+                            if ( !data.responseText || data.readyState != 4 ) {
+                                setTimeout( async function() {
+                                    var msg = await isResponseReady();
+                                    resolve( msg );
+                                }, 50 );
+                            } else {
+                                resolve( data.responseText );
+                            }
+                        });
+                    }
+                    var returnable = await isResponseReady();
+                    return returnable;
+                },
+                pushBTCpmt: async rawtx => {
+                    var txid = await l2generator.postData( "https://mutinynet.com/api/tx", rawtx );
+                    return txid;
+                },
+                getBlockheight: async () => {
+                    var data = await l2generator.getData( `https://mutinynet.com/api/blocks/tip/height` );
+                    return Number( data );
+                },
+                addressOnceHadMoney: async address => {
+                    var nonjson = await l2generator.getData("https://mutinynet.com/api/address/" + address);
+                    var json = JSON.parse(nonjson);
+                    if (json["chain_stats"]["tx_count"] > 0 || json["mempool_stats"]["tx_count"] > 0) return true;
+                    return false;
+                },
+                loopTilAddressReceivesMoney: async address => {
+                    var itReceivedMoney = false;
+                    async function isDataSetYet(data_i_seek) {
+                        return new Promise((resolve, reject) => {
+                            if (!data_i_seek) {
+                                setTimeout(async () => {
+                                    console.log("waiting for address to receive money...");
+                                    try {
+                                        itReceivedMoney = await l2generator.addressOnceHadMoney(address);
+                                    } catch (e) { }
+                                    var msg = await isDataSetYet(itReceivedMoney);
+                                    resolve(msg);
+                                }, 2000);
+                            } else {
+                                resolve(data_i_seek);
+                            }
+                        });
+                    }
+
+                    async function getTimeoutData() {
+                        var data_i_seek = await isDataSetYet(itReceivedMoney);
+                        return data_i_seek;
+                    }
+
+                    let returnable = await getTimeoutData();
+                    return returnable;
+                },
+                addressReceivedMoneyInThisTx: async address => {
+                    var txid;
+                    var vout;
+                    var amt;
+                    var nonjson = await l2generator.getData("https://mutinynet.com/api/address/" + address + "/txs");
+                    var json = JSON.parse(nonjson);
+                    json.forEach(tx => {
+                        tx["vout"].forEach(function (output, index) {
+                            if (output["scriptpubkey_address"] == address) {
+                                txid = tx["txid"];
+                                vout = index;
+                                amt = output["value"];
+                            }
+                        });
+                    });
+                    return [txid, vout, amt];
+                },
                 nameL2: name => {
                     var l2_privkey = super_nostr.getPrivkey();
                     var l2id = super_nostr.getPubkey( l2_privkey );
@@ -3610,16 +3734,12 @@
             <p><button class="submit_l2_name">Submit</button></p>
         </div>
         <div class="provider_deposit_form hidden">
-            <p>Deposit sats to the following address -- this will be used to lease balanced channels to your users</p>
-            <p class="provider_deposit_address"></p>
-            <p>When you've made your deposit, enter the txid, vout, and amount of your deposit below.</p>
-            <p>Txid</p>
-            <p><input class="provider_deposit_txid"></p>
-            <p>Vout</p>
-            <p><input class="provider_deposit_vout"></p>
-            <p>Amnt</p>
-            <p><input class="provider_deposit_amnt"></p>
-            <p><button class="submit_provider_deposit_form">Submit</button></p>
+            <div class="unhidden_provider_deposit_form">
+                <p>Deposit sats to the following address -- this will be used to lease balanced channels to your users</p>
+                <p class="provider_deposit_address"></p>
+                <p class="hidden">When you've made your deposit, hit submit.</p>
+                <p class="hidden"><button class="submit_provider_deposit_form">Submit</button></p>
+            </div>
         </div>
         <div class="almost_done_generating_l2 hidden">
             <p>You're almost done! Just add an NWC string below with full permissions and your users will be able to interact with the lightning network</p>
@@ -3668,7 +3788,7 @@
         </div>
         <div class="wallet_home hidden">
             <p>Balance: <span class="depositor_ln_balance">loading...</span> sats</p>
-            <p><button class="send">Send</button> <button class="receive">Receive</button></p>
+            <p><button class="send">Send</button> <button class="receive">Receive</button><br><button class="force_close">Force close</button></p>
         </div>
         <script>
             var showPage = page => {
@@ -3691,6 +3811,8 @@
                 var name = $( '.l2_name' ).value;
                 l2generator.nameL2( name );
                 showPage( `provider_deposit_form` );
+                await super_nostr.waitSomeSeconds( 1 );
+                $( '.submit_provider_deposit_form' ).click();
             }
             var showProviderDepositAddress = () => {
                 if ( !l2generator.state.latest_addy ) l2generator.makeAddy();
@@ -3698,10 +3820,16 @@
                 $( '.provider_deposit_address' ).innerText = addy;
             }
             $( '.submit_provider_deposit_form' ).onclick = async () => {
-                var txid = $( '.provider_deposit_txid' ).value;
-                var vout = Number( $( '.provider_deposit_vout' ).value );
-                var amnt = Number( $( '.provider_deposit_amnt' ).value );
                 var addy = $( '.provider_deposit_address' ).innerText;
+                await l2generator.loopTilAddressReceivesMoney( addy );
+                await super_nostr.waitSomeSeconds(2);
+                var txinfo = await l2generator.addressReceivedMoneyInThisTx( addy );
+                var txid = txinfo[0];
+                var vout = txinfo[1];
+                var amnt = txinfo[2];
+                // var txid = $( '.provider_deposit_txid' ).value;
+                // var vout = Number( $( '.provider_deposit_vout' ).value );
+                // var amnt = Number( $( '.provider_deposit_amnt' ).value );
                 l2generator.makeUTXO( txid, vout, amnt, l2generator.state.latest_addy[ "addy" ], l2generator.state.latest_addy[ "skey" ] );
                 showPage( `almost_done_generating_l2` );
             }
@@ -3933,6 +4061,9 @@
                                 $( '.income' ).innerText = Number( $( '.income' ).innerText ) + cost_of_deposit;
                                 console.log( 'broadcast this:' );
                                 console.log( funding_txhex );
+                                var txid = await l2generator.pushBTCpmt( funding_txhex );
+                                if ( !hedgehog.isValidHex( txid ) ) return alert( `error: ${txid}` );
+                                else console.log( `broadcasted tx! ${txid}` );
                                 var txfee = 500;
                                 $( '.expenses' ).innerText = Number( $( '.expenses' ).innerText ) + txfee;
                                 utxo_ids_for_papa_swap.forEach( utxo_id => {
@@ -4197,6 +4328,9 @@
                         var channel_is_open = await hedgehog.openChannel( null, null, null, null, null, null, sigs_and_stuff );
                         console.log( 'broadcast this:' );
                         console.log( funding_txhex );
+                        var txid = await l2generator.pushBTCpmt( funding_txhex );
+                        if ( !hedgehog.isValidHex( txid ) ) return alert( `error: ${txid}` );
+                        else console.log( `broadcasted tx! ${txid}` );
                         showPage( 'make_deposit' );
                         // alert( `only click ok once this tx confirms, or click ok immediately if you are ok with a 0-conf channel: ${txid}` );
                         //TODO: check if deposit_invoice is paid and give user
@@ -4253,8 +4387,9 @@
                         var chan_id = json.msg.chan_id;
                         var preimage = json.msg.preimage;
                         var sigs_and_stuff = json.msg.sigs_and_stuff;
-                        var pmt_status = await hedgehog.settleIncomingHTLC({ chan_id, preimage });
-                        if ( !pmt_status.startsWith( "that went well" ) ) return alert( `something went wrong: ${pmt_status}` );
+                        // TODO: uncomment the two lines below
+                        // var pmt_status = await hedgehog.settleIncomingHTLC({ chan_id, preimage });
+                        // if ( !pmt_status.startsWith( "that went well" ) ) return alert( `something went wrong: ${pmt_status}` );
                         //TODO: consider more deeply whether I am right to assume it is safe to resolve an htlc
                         //that is from Bob; my reasoning is that his htlcs always pay me more money, so resolving
                         //them is fine; I don't even need to check that he has the right preimage or anything;
@@ -4346,6 +4481,27 @@
                         var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
                         var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
                         super_nostr.sendEvent( event, socket );
+                    }
+                    $( '.force_close' ).onclick = async () => {
+                        var chan_id = Object.keys( hedgehog.state )[ 0 ];
+                        var txs = hedgehog.closeChannel( chan_id );
+                        var txid = await l2generator.pushBTCpmt( txs[ 0 ] );
+                        try {
+                            if ( !hedgehog.isValidHex( txid ) ) alert( `error: ${txid}` );
+                        } catch ( e ) {}
+                        console.log( `force closure initiated: ${txid}` );
+                        var blockheight = await l2generator.getBlockheight();
+                        var target = blockheight + 5;
+                        var loop = async () => {
+                            console.log( 'waiting...' );
+                            await super_nostr.waitSomeSeconds( 30 );
+                            var blockheight = await l2generator.getBlockheight();
+                            if ( blockheight < target ) return loop();
+                        }
+                        await loop();
+                        var txid = await l2generator.pushBTCpmt( txs[ 1 ] );
+                        if ( !hedgehog.isValidHex( txid ) ) return alert( `error: ${txid}` );
+                        console.log( `force closure finalized: ${txid}` );
                     }
                 } catch ( e ) {}
                 await super_nostr.waitSomeSeconds( 1 );
