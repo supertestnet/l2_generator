@@ -431,6 +431,7 @@
                         if ( amnt_for_alice ) tx1.vout.push( hedgehog.getVout( amnt_for_alice, alices_address ) );
                         if ( amnt_for_bob ) tx1.vout.push( hedgehog.getVout( amnt_for_bob, bobs_address ) );
                     }
+                    console.log( 87, tx1.vout );
                     // console.log( "tx0:", JSON.stringify( tx0 ) );
                     // console.log( "tx1:", JSON.stringify( tx1 ) );
 
@@ -606,7 +607,7 @@
                     if ( am_alice ) {
                         var amnt_for_alice = balances[ 0 ] + amnt;
                         var amnt_for_bob = balances[ 1 ] - amnt - 500 - 500;
-                        if ( data_was_here_originally ) var amnt_for_bob = 0;
+                        if ( data_was_here_originally && !skip_pending_check ) var amnt_for_bob = 0;
                     } else {
                         var amnt_for_alice = balances[ 0 ] - amnt - 500 - 500;
                         var amnt_for_bob = balances[ 1 ] + amnt;
@@ -618,6 +619,7 @@
                         if ( amnt_for_alice ) tx1.vout.push( hedgehog.getVout( amnt_for_alice, alices_address ) );
                         if ( amnt_for_bob ) tx1.vout.push( hedgehog.getVout( amnt_for_bob, bobs_address ) );
                     }
+                    console.log( 88, tx1.vout );
                     // console.log( "tx0:", JSON.stringify( tx0 ) );
                     // console.log( "tx1:", JSON.stringify( tx1 ) );
 
@@ -3125,10 +3127,11 @@
                     var is_right_size = preimage.length === 64;
                     if ( is_hex && is_right_size ) {
                         var actual_hash = await hedgehog.sha256( hedgehog.hexToBytes( preimage ) );
-                        if ( expected_hash !== actual_hash ) return;
+                        //TODO: uncomment the line below
+                        // if ( expected_hash !== actual_hash ) return;
                     }
                     if ( am_alice ) var amnt_to_send = hedgehog.state[ chan_id ].balances_before_most_recent_send[ 1 ] + pending_htlc[ "amnt" ];
-                    else var amnt_to_send = hedgehog.state[ chan_id ].balances_before_most_recent_send[ 0 ] + pending_htlc[ "amnt" ];
+                    else var amnt_to_send = pending_htlc[ "amnt" ];
                     var skip_pending_check = true;
                     console.log( 75.5, hedgehog.state[ chan_id ].balances_before_most_recent_send );
                     console.log( 75.6, pending_htlc[ "amnt" ] );
@@ -3788,7 +3791,8 @@
         </div>
         <div class="wallet_home hidden">
             <p>Balance: <span class="depositor_ln_balance">loading...</span> sats</p>
-            <p><button class="send">Send</button> <button class="receive">Receive</button><br><button class="force_close">Force close</button></p>
+            <p><button class="send">Send</button> <button class="receive">Receive</button></p>
+            <p><button class="force_close">Force close</button></p>
         </div>
         <script>
             var showPage = page => {
