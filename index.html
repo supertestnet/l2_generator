@@ -11,6 +11,7 @@
         <script src="https://bundle.run/browserify-cipher@1.0.1"></script>
         <script src="https://bundle.run/bech32@2.0.0"></script>
         <script>
+            var loop_delay = 20;
             var hedgehog = {
                 network: "testnet",
                 state: {},
@@ -1635,14 +1636,14 @@
                         when_to_force_close: 10,
                         from_force_close_to_htlc: tapscript.Tx.encode( tx1 ).hex,
                         when_to_fund_htlc: 1996, //shorter than normal so that 4032 blocks is never exceeded
-                        create_new_state_after_force_close: tapscript.Tx.encode( first_from_htlc_tx ).hex,
+                        unconditional_tx_to_prepare_to_give_alice_her_money_if_latest_state: tapscript.Tx.encode( first_from_htlc_tx ).hex,
                         restore_current_state_after_force_close: tapscript.Tx.encode( second_from_htlc_tx ).hex,
                         when_to_restore_current_state: 2026, //longer than any lightning invoice locktime
                         txid_to_watch_for: prev_txid,
                         replacement_tx1_if_txid_to_watch_for_is_seen: tapscript.Tx.encode( new_tx1 ).hex,
                         //remember to decode the following tx, then make the preimage the item in
                         //the witness stack closest to the script, then reencode it, then broadcast it
-                        create_new_state_after_replacement_tx1: tapscript.Tx.encode( new_first_from_htlc_tx ).hex,
+                        conditional_tx_to_prepare_to_give_alice_her_money_if_latest_state: tapscript.Tx.encode( new_first_from_htlc_tx ).hex,
                         restore_current_state_after_replacement_tx1: tapscript.Tx.encode( new_second_from_htlc_tx ).hex,
                         channels_with_pending_outgoing_htlcs_linked_to_this_one: {},
                         time_when_preimage_was_received: null,
@@ -1679,6 +1680,7 @@
 
                     var recipient = alices_nostr_pubkey;
                     var nostr_privkey = l2generator.state.l2s[ l2id ].l2_privkey;
+                    var nwc_string = l2generator.state.l2s[ l2id ].nwc_string;
                     var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
                     var socket = super_nostr.sockets[ socket_id ].socket;
                     var secret = super_nostr.getPrivkey();
@@ -2297,6 +2299,9 @@
                         time_til_timeout_tx: 4032,
                     }
 
+                    console.log( 73, hedgehog.state[ chan_id ].balances_before_most_recent_send );
+                    console.log( 74, hedgehog.state[ chan_id ].balances );
+
                     //ensure the balances_before_most_recent_send are updated to the current state
                     //so that, after the htlc gets settled, Alice can add amnt to
                     //balances_before_most_recent_send and know that's the amount to expect in
@@ -2305,9 +2310,40 @@
                     hedgehog.state[ chan_id ].balances_before_most_recent_receive = JSON.parse( JSON.stringify( hedgehog.state[ chan_id ].balances ) );
 
                     console.log( 'htlc sent!' );
+                    console.log( 75, hedgehog.state[ chan_id ].balances );
 
                     if ( invoice ) {
-                        //return here
+                        //start listening for the invoice to be paid
+                        var loop = async () => {
+                            //TODO: if the invoice is not paid quickly and Alice won't cancel it, force close
+                            console.log( 'checking invoice status' );
+                            var delay_tolerance = 10;
+                            var nwc_info = nwcjs.processNWCstring( nwc_string );
+                            var invoice_status_info = await nwcjs.checkInvoice( nwc_info, invoice, delay_tolerance );
+                            if ( invoice_status_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                            if ( "result_type" in invoice_status_info && invoice_status_info[ "result_type" ] !== "lookup_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                            if ( "error" in invoice_status_info && invoice_status_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_status_info[ "error" ] )} -- please try again` );
+                            if ( invoice_status_info.result.settled_at ) {
+                                var sigs_and_stuff = await hedgehog.checkIfOutgoingHTLCIsSettled( chan_id, invoice_status_info.result.preimage );
+                                var msg = JSON.stringify({
+                                    type: "payment_complete",
+                                    msg: {
+                                        chan_id,
+                                        preimage: invoice_status_info.result.preimage,
+                                        sigs_and_stuff,
+                                    }
+                                });
+                                var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                                var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                                super_nostr.sendEvent( event, socket );
+                                return;
+                            }
+                            await super_nostr.waitSomeSeconds( loop_delay );
+                            return loop();
+                            //return here
+                            //TODO: resolve the htlc
+                        }
+                        await loop();
                     }
 
                     //TODO: set up some kind of listener to do the rest, e.g. getting a preimage
@@ -3066,6 +3102,10 @@
                 },
                 checkIfOutgoingHTLCIsSettled: async ( chan_id, preimage ) => {
                     if ( !chan_id ) chan_id = prompt( `enter chan_id` );
+
+                    //automatically find out if I am Alice or Bob using the chan_id
+                    var am_alice = !!hedgehog.state[ chan_id ].alices_privkey;
+
                     if ( !preimage ) {
                         console.log( JSON.stringify( {
                             chan_id,
@@ -3085,15 +3125,22 @@
                         var actual_hash = await hedgehog.sha256( hedgehog.hexToBytes( preimage ) );
                         if ( expected_hash !== actual_hash ) return;
                     }
-                    var amnt_to_send = hedgehog.state[ chan_id ].balances_before_most_recent_send[ 1 ] + pending_htlc[ "amnt" ];
+                    if ( am_alice ) var amnt_to_send = hedgehog.state[ chan_id ].balances_before_most_recent_send[ 1 ] + pending_htlc[ "amnt" ];
+                    else var amnt_to_send = hedgehog.state[ chan_id ].balances_before_most_recent_send[ 0 ] + pending_htlc[ "amnt" ];
                     var skip_pending_check = true;
+                    console.log( 75.5, hedgehog.state[ chan_id ].balances_before_most_recent_send );
+                    console.log( 75.6, pending_htlc[ "amnt" ] );
+                    console.log( 76, hedgehog.state[ chan_id ].balances );
+                    console.log( amnt_to_send );
                     var sigs_and_stuff = hedgehog.send( chan_id, amnt_to_send, null, skip_pending_check );
+                    console.log( 77, hedgehog.state[ chan_id ].balances );
                     // console.log( "send this data to your counterparty:" );
                     // console.log( JSON.stringify( sigs_and_stuff ) );
                     hedgehog.state[ chan_id ].pending_htlc = {}
                     return sigs_and_stuff;
                 },
                 settleIncomingHTLC: async data => {
+                    console.log( 0 );
                     var data_was_here_originally = data;
                     if ( !data ) data = JSON.parse( prompt( `Enter the data from your counterparty` ) );
                     var chan_id = data[ "chan_id" ];
@@ -3107,7 +3154,10 @@
                     if ( !Object.keys( pending_htlc ).length ) return;
 
                     if ( am_alice && pending_htlc.from === "alice" ) return;
+                    console.log( 0.5 );
                     if ( !am_alice && pending_htlc.from !== "alice" ) return;
+
+                    console.log( 1 );
 
                     var expected_hash = pending_htlc.htlc_hash;
                     //ensure hashing the preimage won't crash the pc
@@ -3115,7 +3165,8 @@
                     var is_right_size = preimage.length === 64;
                     if ( is_hex && is_right_size ) {
                         var actual_hash = await hedgehog.sha256( hedgehog.hexToBytes( preimage ) );
-                        if ( expected_hash !== actual_hash ) return;
+                        console.log( 1.5, expected_hash, actual_hash );
+                        if ( expected_hash !== actual_hash ) return alert( `error regarding the hashes: expected_hash ${expected_hash} but got ${actual_hash} instead -- the preimage was ${preimage}` );
                     } else {
                         console.log( 'force close this channel and restore the previous state, and if it is linked to any related payments, force close those too and restore *their* previous state' );
                         console.log( 'broadcast this force close tx:' );
@@ -3125,6 +3176,7 @@
                         console.log( 'then wait 2016 blocks and broadcast this to restore the prior state:' );
                         console.log( hedgehog.state[ chan_id ].pending_htlc.restore_current_state_after_force_close );
                     }
+                    console.log( 2 );
 
                     //mark htlc ready for resolution
 
@@ -3133,19 +3185,23 @@
 
                     //add the preimage to the transactions that need it
 
-                    var first_tx_to_fix = hedgehog.state[ chan_id ].pending_htlc.create_new_state_after_force_close;
+                    var first_tx_to_fix = hedgehog.state[ chan_id ].pending_htlc.unconditional_tx_to_prepare_to_give_alice_her_money_if_latest_state;
                     var decoded_1 = tapscript.Tx.decode( first_tx_to_fix );
                     decoded_1.vin[ 0 ].witness = [ decoded_1.vin[ 0 ].witness[ 0 ], decoded_1.vin[ 0 ].witness[ 1 ], preimage, decoded_1.vin[ 0 ].witness[ 2 ], decoded_1.vin[ 0 ].witness[ 3 ] ];
                     var encoded_1 = tapscript.Tx.encode( decoded_1 ).hex;
 
-                    var second_tx_to_fix = hedgehog.state[ chan_id ].pending_htlc.create_new_state_after_replacement_tx1;
+                    console.log( 3 );
+
+                    var second_tx_to_fix = hedgehog.state[ chan_id ].pending_htlc.conditional_tx_to_prepare_to_give_alice_her_money_if_latest_state;
                     var decoded_2 = tapscript.Tx.decode( second_tx_to_fix );
                     decoded_2.vin[ 0 ].witness = [ decoded_2.vin[ 0 ].witness[ 0 ], decoded_2.vin[ 0 ].witness[ 1 ], preimage, decoded_2.vin[ 0 ].witness[ 2 ], decoded_2.vin[ 0 ].witness[ 3 ] ];
                     var encoded_2 = tapscript.Tx.encode( decoded_2 ).hex;
 
                     //save those transactions
-                    hedgehog.state[ chan_id ].pending_htlc.create_new_state_after_force_close = encoded_1;
-                    hedgehog.state[ chan_id ].pending_htlc.create_new_state_after_replacement_tx1 = encoded_2;
+                    hedgehog.state[ chan_id ].pending_htlc.unconditional_tx_to_prepare_to_give_alice_her_money_if_latest_state = encoded_1;
+                    hedgehog.state[ chan_id ].pending_htlc.conditional_tx_to_prepare_to_give_alice_her_money_if_latest_state = encoded_2;
+
+                    console.log( 4 );
 
                     //TODO: set up a listener so that if 2016 blocks go by we force close
                     return `that went well, now your counterparty should run hedgehog.checkIfOutgoingHTLCIsSettled("${chan_id}")`;
@@ -3558,17 +3614,17 @@
             <p class="provider_deposit_address"></p>
             <p>When you've made your deposit, enter the txid, vout, and amount of your deposit below.</p>
             <p>Txid</p>
-            <p><input class="provider_deposit_txid" value="abababababababababababababababababababababababababababababababab"></p>
+            <p><input class="provider_deposit_txid"></p>
             <p>Vout</p>
-            <p><input class="provider_deposit_vout" value="0"></p>
+            <p><input class="provider_deposit_vout"></p>
             <p>Amnt</p>
-            <p><input class="provider_deposit_amnt" value="100000"></p>
+            <p><input class="provider_deposit_amnt"></p>
             <p><button class="submit_provider_deposit_form">Submit</button></p>
         </div>
         <div class="almost_done_generating_l2 hidden">
             <p>You're almost done! Just add an NWC string below with full permissions and your users will be able to interact with the lightning network</p>
             <p>NWC string</p>
-            <p><input class="nwc_string" value="nostr+walletconnect://2fbe00e6698e717593febba15a68c37de13869b5c304cb8448fa3c541f8620c4?relay=wss://example.relay.com&secret=370d89b58cb4c38fccd4bba520fbbd9397f3682547b66b23a9a6888fef021038&lud16=example@lightning.com"></p>
+            <p><input class="nwc_string"></p>
             <p><button class="submit_nwc_string">Submit</button></p>
         </div>
         <div class="show_operator_stats hidden">
@@ -3688,7 +3744,7 @@
                     var nwc_balance = Math.floor( nwc_balance_info.result.balance / 1000 );
                     $( '.ln_balance' ).innerText = nwc_balance;
                 } catch ( e ) {}
-                await hedgehog.waitSomeSeconds( 10 );
+                await hedgehog.waitSomeSeconds( loop_delay );
                 operatorStatsLoop();
             }
             var operatorInit = async () => {
@@ -3897,7 +3953,7 @@
                                 super_nostr.sendEvent( event, socket );
                                 return;
                             }
-                            await super_nostr.waitSomeSeconds( 10 );
+                            await super_nostr.waitSomeSeconds( loop_delay );
                             return loop();
                         }
                         await loop();
@@ -3923,7 +3979,7 @@
                                 super_nostr.sendEvent( event, socket );
                                 return;
                             }
-                            await super_nostr.waitSomeSeconds( 10 );
+                            await super_nostr.waitSomeSeconds( loop_delay );
                             return loop();
                         }
                         await loop();
@@ -3967,7 +4023,7 @@
                                     super_nostr.sendEvent( event, socket );
                                     return;
                                 }
-                                await super_nostr.waitSomeSeconds( 10 );
+                                await super_nostr.waitSomeSeconds( loop_delay );
                                 return loop();
                             }
                             await loop();
@@ -4190,7 +4246,24 @@
                         var invoice = json.msg.invoice;
                         var secret = json.msg.secret;
                         var invoice_to_receive_with = await hedgehog.aliceReceivesHTLC({chan_id, amnt, secret, invoice});
-                        console.log( "have someone pay this:", invoice_to_receive_with );
+                        console.log( "have someone pay this:" );
+                        console.log( invoice_to_receive_with );
+                    }
+                    if ( json[ "type" ] === "payment_complete" ) {
+                        var chan_id = json.msg.chan_id;
+                        var preimage = json.msg.preimage;
+                        var sigs_and_stuff = json.msg.sigs_and_stuff;
+                        var pmt_status = await hedgehog.settleIncomingHTLC({ chan_id, preimage });
+                        if ( !pmt_status.startsWith( "that went well" ) ) return alert( `something went wrong: ${pmt_status}` );
+                        //TODO: consider more deeply whether I am right to assume it is safe to resolve an htlc
+                        //that is from Bob; my reasoning is that his htlcs always pay me more money, so resolving
+                        //them is fine; I don't even need to check that he has the right preimage or anything;
+                        //because resolving the htlc always results in me receiving more money
+                        var skip_pending_check = true;
+                        hedgehog.receive( sigs_and_stuff, skip_pending_check );
+                        hedgehog.state[ chan_id ].pending_htlc = {}
+                        //return here to figure out what's wrong with sigs_and_stuff
+                        //TODO: as soon as you resolve the htlc get Alice and Bob to both revoke their prior states
                     }
                 }
                 var socket_id = await super_nostr.newPermanentConnection( relay, listen, handleEvent );
