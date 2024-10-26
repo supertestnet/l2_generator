@@ -816,6 +816,7 @@
                 },
                 aliceSendsHtlc: async ( chan_id, amnt, htlc_hash = null, invoice_to_pay ) => {
                     if ( amnt < 330 ) return alert( `the dust limit is 330 sats and you want to make an htlc worth less than that, i.e. only ${amnt} sats, so it cannot be done -- the software refuses and your only recourse is to find or make a modified version that allows dust htlcs` );
+                    console.log( amnt );
                     if ( Object.keys( hedgehog.state[ chan_id ].pending_htlc ).length ) return alert( `you have a pending htlc, and you cannot send money while you have one...clear it before proceeding` );
                     //automatically find out if I am Alice or Bob using the chan_id
                     var am_alice = !!hedgehog.state[ chan_id ].alices_privkey;
@@ -1073,10 +1074,8 @@
                     super_nostr.sendEvent( event, socket );
                     var preparsed_info_from_bob = await getNote( secret );
                     sessionStorage.removeItem( secret );
-                    console.log( preparsed_info_from_bob );
                     var { secret_for_responding_to_bob } = JSON.parse( preparsed_info_from_bob );
                     var info_from_bob = JSON.parse( preparsed_info_from_bob )[ "data_for_alice" ];
-                    console.log( info_from_bob );
                     var { bobs_first_htlc_sig, bobs_second_htlc_sig, bobs_conditional_first_htlc_sig, bobs_conditional_second_htlc_sig } = info_from_bob;
                     // var { bobs_first_htlc_sig, bobs_second_htlc_sig, bobs_conditional_first_htlc_sig, bobs_conditional_second_htlc_sig } = JSON.parse( prompt( `send the info in your console to bob and enter his reply -- btw he should be running hedgehog.bobReceivesHTLC()` ) );
 
@@ -1671,16 +1670,36 @@
 
                     return invoice_to_pay;
                 },
-                bobSendsHtlc: async ( chan_id, amnt, htlc_hash = null ) => {
+                bobSendsHtlc: async ( chan_id, amnt, htlc_hash = null, invoice = null, alices_nostr_pubkey, l2id ) => {
                     if ( amnt < 330 ) return alert( `the dust limit is 330 sats and you want to make an htlc worth less than that, i.e. only ${amnt} sats, so it cannot be done -- the software refuses and your only recourse is to find or make a modified version that allows dust htlcs` );
                     if ( Object.keys( hedgehog.state[ chan_id ].pending_htlc ).length ) return alert( `you have a pending htlc, and you cannot send money while you have one...clear it before proceeding` );
                     //automatically find out if I am Alice or Bob using the chan_id
                     var am_alice = !!hedgehog.state[ chan_id ].alices_privkey;
                     if ( am_alice ) return;
 
-                    console.log( JSON.stringify({ chan_id, amnt }) );
-                    var alices_revocation_data = JSON.parse( prompt( 'send the data in your console to alice and enter her reply here -- she should run hedgehog.aliceReceivesHTLC()' ) );
-                    var alices_revocation_hash = alices_revocation_data[ "alices_revocation_hash" ];
+                    var recipient = alices_nostr_pubkey;
+                    var nostr_privkey = l2generator.state.l2s[ l2id ].l2_privkey;
+                    var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                    var socket = super_nostr.sockets[ socket_id ].socket;
+                    var secret = super_nostr.getPrivkey();
+                    var msg = JSON.stringify({
+                        type: "get_revocation_data",
+                        msg: {
+                            secret,
+                            chan_id,
+                            amnt,
+                            invoice,
+                        }
+                    });
+                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                    super_nostr.sendEvent( event, socket );
+                    var preparsed_info_from_alice = await getNote( secret );
+                    sessionStorage.removeItem( secret );
+                    var { alices_revocation_hash, secret_for_responding_to_alice } = JSON.parse( preparsed_info_from_alice );
+                    // console.log( JSON.stringify({ chan_id, amnt }) );
+                    // var alices_revocation_data = JSON.parse( prompt( 'send the data in your console to alice and enter her reply here -- she should run hedgehog.aliceReceivesHTLC()' ) );
+                    // var alices_revocation_hash = alices_revocation_data[ "alices_revocation_hash" ];
 
                     //if I am the previous sender, restore the state to what it was before
                     //I last sent so I can overwrite my previous state update
@@ -2084,11 +2103,35 @@
                         bobs_conditional_cheater_sig,
                     }
 
+                    var recipient = alices_nostr_pubkey;
+                    var nostr_privkey = l2generator.state.l2s[ l2id ].l2_privkey;
+                    var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                    var socket = super_nostr.sockets[ socket_id ].socket;
+                    var secret_2_for_responding_to_bob = super_nostr.getPrivkey();
+                    var msg = JSON.stringify({
+                        type: "secret_you_need",
+                        msg: {
+                            thing_needed: JSON.stringify({
+                                data: info_for_alice,
+                                secret_2_for_responding_to_bob,
+                            }),
+                            secret: secret_for_responding_to_alice,
+                        }
+                    });
+                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                    super_nostr.sendEvent( event, socket );
+                    var preparsed_info_from_alice = await getNote( secret_2_for_responding_to_bob );
+                    sessionStorage.removeItem( secret_2_for_responding_to_bob );
+
+                    var { data, secret_2_for_responding_to_alice } = JSON.parse( preparsed_info_from_alice );
+
                     //don't send the rest of the data til alice cosigns first_from_htlc_tx and second_from_htlc_tx
                     //and the restoration_tx and the conditional versions thereof
-                    console.log( `send this info to alice:` );
-                    console.log( JSON.stringify( info_for_alice ) );
-                    var { alices_first_htlc_sig, alices_revo_tx_1_sig, alices_revo_tx_2_sig, alices_second_htlc_sig, alices_restoration_sig, alices_conditional_first_htlc_sig, alices_conditional_revo_tx_1_sig, alices_conditional_revo_tx_2_sig, alices_conditional_second_htlc_sig, alices_conditional_restoration_sig } = JSON.parse( prompt( `send the info in your console to alice and enter her reply` ) );
+                    // console.log( `send this info to alice:` );
+                    // console.log( JSON.stringify( info_for_alice ) );
+                    // var { alices_first_htlc_sig, alices_revo_tx_1_sig, alices_revo_tx_2_sig, alices_second_htlc_sig, alices_restoration_sig, alices_conditional_first_htlc_sig, alices_conditional_revo_tx_1_sig, alices_conditional_revo_tx_2_sig, alices_conditional_second_htlc_sig, alices_conditional_restoration_sig } = JSON.parse( prompt( `send the info in your console to alice and enter her reply` ) );
+                    var { alices_first_htlc_sig, alices_revo_tx_1_sig, alices_revo_tx_2_sig, alices_second_htlc_sig, alices_restoration_sig, alices_conditional_first_htlc_sig, alices_conditional_revo_tx_1_sig, alices_conditional_revo_tx_2_sig, alices_conditional_second_htlc_sig, alices_conditional_restoration_sig } = data;
 
                     //validate the sigs
                     if ( am_alice ) var pubkey_to_validate_against = hedgehog.state[ chan_id ].bobs_pubkey;
@@ -2146,9 +2189,24 @@
                     if ( conditional_revocation_sig ) object[ "conditional_revocation_sig" ] = conditional_revocation_sig;
                     if ( full_revocation_is_necessary ) object[ "full_revocation_preimage" ] = full_revocation_preimage;
 
-                    console.log( `send this info to alice:` );
-                    console.log( JSON.stringify( object ) );
-                    alert( `send the info in your console to alice and then click ok` );
+                    var recipient = alices_nostr_pubkey;
+                    var nostr_privkey = l2generator.state.l2s[ l2id ].l2_privkey;
+                    var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                    var socket = super_nostr.sockets[ socket_id ].socket;
+                    var msg = JSON.stringify({
+                        type: "secret_you_need",
+                        msg: {
+                            thing_needed: JSON.stringify( object ),
+                            secret: secret_2_for_responding_to_alice,
+                        }
+                    });
+                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                    super_nostr.sendEvent( event, socket );
+
+                    // console.log( `send this info to alice:` );
+                    // console.log( JSON.stringify( object ) );
+                    // alert( `send the info in your console to alice and then click ok` );
 
                     var prev_force_close_tx = hedgehog.state[ chan_id ].latest_force_close_txs[ 0 ];
 
@@ -2246,9 +2304,17 @@
                     hedgehog.state[ chan_id ].balances_before_most_recent_send = JSON.parse( JSON.stringify( hedgehog.state[ chan_id ].balances ) );
                     hedgehog.state[ chan_id ].balances_before_most_recent_receive = JSON.parse( JSON.stringify( hedgehog.state[ chan_id ].balances ) );
 
+                    console.log( 'htlc sent!' );
+
+                    if ( invoice ) {
+                        //return here
+                    }
+
                     //TODO: set up some kind of listener to do the rest, e.g. getting a preimage
-                    //from the recipient and using it to close out the posiiton with the sender,
-                    //and then revoking the revocation_address so that it can't be used
+                    //from the recipient (if they have it) or from the nwc funding source and
+                    //using it to close out the posititon with the sender (and the recipient, if
+                    //they don't already have the preimage) and then revoking the
+                    //revocation_address so that it can't be used
                 },
                 aliceReceivesHTLC: async data => {
                     //TODO: ensure Alice rejects the offer if it contains an htlc_hash she doesn't expect
@@ -2257,10 +2323,15 @@
                     //the amount offered to her by this htlc -- oh yeah and I just figured out that she
                     //should also *independently* have info from the sender about how much they want to
                     //pay her, that way Bob can't send her an invoice for *less* than that and keep the
-                    //difference
+                    //difference -- then again, she is the one who hit receive, and then typed in an
+                    //amount, so she *should* know how much money to expect
                     var data_was_here_originally = data;
                     if ( !data ) data = JSON.parse( prompt( `Enter the data from your counterparty` ) );
                     var chan_id = data[ "chan_id" ];
+                    var secret_for_responding_to_bob = null;
+                    var invoice = null;
+                    if ( data[ "secret" ] ) secret_for_responding_to_bob = data[ "secret" ];
+                    if ( data[ "invoice" ] ) invoice = data[ "invoice" ];
 
                     if ( Object.keys( hedgehog.state[ chan_id ].pending_htlc ).length ) return alert( `you have a pending htlc, and you cannot receive money in this channel while you have one...clear it before proceeding` );
 
@@ -2271,10 +2342,36 @@
                     //give Bob a revocation hash
                     var alices_revocation_preimage = hedgehog.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
                     var alices_revocation_hash = await hedgehog.sha256( hedgehog.hexToBytes( alices_revocation_preimage ) );
-                    console.log( JSON.stringify({alices_revocation_hash}) );
-                    alert( `send your counterparty the data in your console and then click ok` );
-                    await hedgehog.waitSomeSeconds( 1 );
-                    var data = JSON.parse( prompt( `enter the data from your counterparty here` ) );
+                    if ( secret_for_responding_to_bob ) {
+                        var recipient = $_GET[ "layer2" ];
+                        var depositor_id = Object.keys( l2generator.state.depositor_data )[ 0 ];
+                        var nostr_privkey = l2generator.state.depositor_data[ depositor_id ].nostr_privkey;
+                        var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                        var socket = super_nostr.sockets[ socket_id ].socket;
+                        var secret_for_responding_to_alice = super_nostr.getPrivkey();
+                        var msg = JSON.stringify({
+                            type: "secret_you_need",
+                            msg: {
+                                thing_needed: JSON.stringify({
+                                    alices_revocation_hash,
+                                    secret_for_responding_to_alice,
+                                }),
+                                secret: secret_for_responding_to_bob,
+                            }
+                        });
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
+                        var preparsed_info_from_bob = await getNote( secret_for_responding_to_alice );
+                        sessionStorage.removeItem( secret_for_responding_to_alice );
+                        var data = JSON.parse( preparsed_info_from_bob )[ "data" ];
+                        var secret_2_for_responding_to_bob = JSON.parse( preparsed_info_from_bob )[ "secret_2_for_responding_to_bob" ];
+                    } else {
+                        console.log( JSON.stringify({alices_revocation_hash}) );
+                        alert( `send your counterparty the data in your console and then click ok` );
+                        await hedgehog.waitSomeSeconds( 1 );
+                        var data = JSON.parse( prompt( `enter the data from your counterparty here` ) );
+                    }
                     var new_amnt = data[ "amnt" ];
                     if ( new_amnt !== amnt ) return alert( `aborting because your counterparty tried to scam you on the amount` );
                     var new_chan_id = data[ "chan_id" ];
@@ -2335,6 +2432,14 @@
 
                     //create the htlc
                     var htlc_hash = data[ "htlc_hash" ];
+                    if ( invoice ) {
+                        var invoice_hash = hedgehog.getInvoicePmthash( invoice );
+                        if ( htlc_hash !== invoice_hash ) return alert( `bob tried to scam you by giving you an htlc unrelated to the invoice` );
+                        var invoice_amt = hedgehog.getInvoiceAmount( invoice );
+                        //TODO: consider whether to allow the invoice to pay you less
+                        //as a kind of fee for Bob
+                        if ( invoice_amt !== data[ "amnt" ] ) return alert( `bob tried to scam you by giving you an invoice with the wrong amount` );
+                    }
                     var htlc_scripts = hedgehog.makeHTLC( chan_id, htlc_hash );
                     var htlc_address = hedgehog.makeAddress( htlc_scripts );
 
@@ -2629,12 +2734,36 @@
                     if ( alices_conditional_revo_tx_1_sig ) data_for_bob[ "alices_conditional_revo_tx_1_sig" ] = alices_conditional_revo_tx_1_sig;
                     if ( alices_conditional_revo_tx_2_sig ) data_for_bob[ "alices_conditional_revo_tx_2_sig" ] = alices_conditional_revo_tx_2_sig;
 
-                    console.log( `send this data to bob:` );
-                    console.log( JSON.stringify( data_for_bob ) );
-
-                    alert( `send the data in your console to bob and then click ok` );
-                    await hedgehog.waitSomeSeconds( 1 );
-                    var data = JSON.parse( prompt( `enter bob's reply here` ) );
+                    if ( secret_for_responding_to_bob ) {
+                        var recipient = $_GET[ "layer2" ];
+                        var depositor_id = Object.keys( l2generator.state.depositor_data )[ 0 ];
+                        var nostr_privkey = l2generator.state.depositor_data[ depositor_id ].nostr_privkey;
+                        var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                        var socket = super_nostr.sockets[ socket_id ].socket;
+                        var secret_2_for_responding_to_alice = super_nostr.getPrivkey();
+                        var msg = JSON.stringify({
+                            type: "secret_you_need",
+                            msg: {
+                                thing_needed: JSON.stringify({
+                                    data: data_for_bob,
+                                    secret_2_for_responding_to_alice,
+                                }),
+                                secret: secret_2_for_responding_to_bob,
+                            }
+                        });
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
+                        var preparsed_info_from_bob = await getNote( secret_2_for_responding_to_alice );
+                        sessionStorage.removeItem( secret_2_for_responding_to_alice );
+                        var data = JSON.parse( preparsed_info_from_bob );
+                    } else {
+                        console.log( `send this data to bob:` );
+                        console.log( JSON.stringify( data_for_bob ) );
+                        alert( `send the data in your console to bob and then click ok` );
+                        await hedgehog.waitSomeSeconds( 1 );
+                        var data = JSON.parse( prompt( `enter bob's reply here` ) );
+                    }
 
                     //validate the rest of the data sent by your counterparty
 
@@ -2875,17 +3004,20 @@
                     //bob force closes and alice gives herself the money using a preimage obtained from bob
                     console.log( `next test prev_tx0 (bob) replacement_tx1 (alice) new_first_from_htlc_tx (alice)` );
 
-                    //note that I was gonna have Bob broadcast *his* prev_tx0 and then
-                    //have *Alice* broadcast *her* replacement_tx1 but that won't
-                    //result in the htlc getting created -- it will just mean they
-                    //go to the state *before* the htlc was created, in which Alice
-                    //had more money coming to her
+                    //TODO: also test other scenarios and consider eliminating txs that Alice doesn't need
+                    //TODO: relatedly, I think Bob also has txs that he doesn't need -- and in both cases
+                    //I think these unneeded txs allow them to put the money in states that they shouldn't
+                    //be able to put them in, because they can steal them from those states in some scenarios
+                    //e.g. Bob shouldn't be able to put Alice's money in a state she has revoked unless *she*
+                    //broadcasts it after revoking it -- when *Bob* force closes he should not be able to do
+                    //that
 
                     //TODO: set up a listener to get the preimage from somewhere
                     //or restore the old state after too much time goes by without resolution
 
                     //i am alice
 
+                    if ( invoice ) return invoice;
                     return true;
                 },
                 closeChannel: chan_id => {
@@ -3480,7 +3612,7 @@
         </div>
         <div class="wallet_home hidden">
             <p>Balance: <span class="depositor_ln_balance">loading...</span> sats</p>
-            <p><button class="send">Send</button> <button class="send">Receive</button></p>
+            <p><button class="send">Send</button> <button class="receive">Receive</button></p>
         </div>
         <script>
             var showPage = page => {
@@ -3556,7 +3688,7 @@
                     var nwc_balance = Math.floor( nwc_balance_info.result.balance / 1000 );
                     $( '.ln_balance' ).innerText = nwc_balance;
                 } catch ( e ) {}
-                await hedgehog.waitSomeSeconds( 5 );
+                await hedgehog.waitSomeSeconds( 10 );
                 operatorStatsLoop();
             }
             var operatorInit = async () => {
@@ -3814,7 +3946,7 @@
                             //start listening for the cost_of_deposit invoice to be paid
                             var loop = async () => {
                                 console.log( 'checking invoice status' );
-                                var delay_tolerance = 6;
+                                var delay_tolerance = 10;
                                 var invoice_status_info = await nwcjs.checkInvoice( nwc_info, invoice_to_pay, delay_tolerance );
                                 if ( invoice_status_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
                                 if ( "result_type" in invoice_status_info && invoice_status_info[ "result_type" ] !== "lookup_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
@@ -3851,6 +3983,22 @@
                         //them is fine; I don't even need to check that she has the right preimage or anything;
                         //because resolving the htlc always results in me receiving more money
                         hedgehog.receive( sigs_and_stuff, skip_pending_check );
+                        hedgehog.state[ chan_id ].pending_htlc = {}
+                    }
+                    if ( json[ "type" ] === "initiate_ln_receive" ) {
+                        //TODO: validate that the chan_id exists
+                        var chan_id = json.msg.chan_id;
+                        var amnt = Number( json.msg.amnt );
+                        if ( !amnt || amnt < 0 ) return 'error';
+                        //TODO: ensure you have outgoing capacity
+                        var delay_tolerance = 10;
+                        var invoice_info = await nwcjs.makeInvoice( nwc_info, amnt, desc, delay_tolerance );
+                        if ( invoice_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_info )}` );
+                        if ( "result_type" in invoice_info && invoice_info[ "result_type" ] !== "make_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_info )}` );
+                        if ( "error" in invoice_info && invoice_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_info[ "error" ] )} -- please try again` );
+                        var invoice = invoice_info.result.invoice || invoice_info.result.bolt11;
+                        var htlc_hash = hedgehog.getInvoicePmthash( invoice );
+                        hedgehog.bobSendsHtlc( chan_id, amnt, htlc_hash, invoice, event.pubkey, l2id );
                     }
                 }
                 await super_nostr.newPermanentConnection( relay, listen, handleEvent );
@@ -3899,7 +4047,6 @@
                         var papa_swap_hash = hedgehog.getInvoicePmthash( json.msg.deposit_invoice );
                         var utxos_for_papa_swap = json.msg.public_utxos_for_papa_swap;
                         var change_address = json.msg.change_address;
-                        var secret = json.msg.secret;
                         var bobs_pubkey = json.msg.bobs_pubkey;
                         var alices_pubkey = Object.keys( hedgehog.keypairs )[ 0 ];
                         var alices_privkey = hedgehog.keypairs[ alices_pubkey ][ "privkey" ];
@@ -3923,7 +4070,6 @@
                         var deposit_mining_txfee = 500;
                         if ( sum - deposit_amount > 330 ) papa_swap_funding_tx.vout.push( hedgehog.getVout( sum - deposit_amount - deposit_mining_txfee, change_address ) );
                         var txid = tapscript.Tx.util.getTxid( papa_swap_funding_tx );
-                        console.log( 78, JSON.stringify( papa_swap_funding_tx ), txid );
                         var vout = 0;
                         var amnt = deposit_amount;
 
@@ -3960,6 +4106,7 @@
                         });
 
                         var sig = tapscript.Signer.taproot.sign( alices_privkey, multisig_to_revocable_addy_tx, 0, { extension: multisig_tree[ 0 ] }).hex;
+                        var secret = json.msg.secret;
                         var msg = JSON.stringify({
                             type: "secret_you_need",
                             msg: {
@@ -4033,6 +4180,18 @@
                         var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
                         super_nostr.sendEvent( event, socket );
                     }
+                    if ( json[ "type" ] === "get_revocation_data" ) {
+                        //TODO: validate the info sent by Bob
+                        //especially that the hash he ends up
+                        //sending matches the invoice you're
+                        //receiving with
+                        var chan_id = json.msg.chan_id;
+                        var amnt = json.msg.amnt;
+                        var invoice = json.msg.invoice;
+                        var secret = json.msg.secret;
+                        var invoice_to_receive_with = await hedgehog.aliceReceivesHTLC({chan_id, amnt, secret, invoice});
+                        console.log( "have someone pay this:", invoice_to_receive_with );
+                    }
                 }
                 var socket_id = await super_nostr.newPermanentConnection( relay, listen, handleEvent );
                 var socket = super_nostr.sockets[ socket_id ].socket;
@@ -4092,8 +4251,28 @@
                         var chan_id = Object.keys( hedgehog.state )[ 0 ];
                         var htlc_hash = hedgehog.getInvoicePmthash( invoice );
                         var amnt = hedgehog.getInvoiceAmount( invoice );
-                        if ( !amnt || !htlc_hash ) return alert( `error` );
+                        if ( !amnt || !htlc_hash || amnt < 0 ) return alert( `error` );
                         var info_for_bob = await hedgehog.aliceSendsHtlc( chan_id, amnt, htlc_hash, invoice );
+                    }
+                    $( '.receive' ).onclick = async () => {
+                        var amnt = Number( prompt( `enter an amount you want to receive` ) );
+                        if ( !amnt ) return;
+                        var chan_id = Object.keys( hedgehog.state )[ 0 ];
+                        var recipient = $_GET[ "layer2" ];
+                        var depositor_id = Object.keys( l2generator.state.depositor_data )[ 0 ];
+                        var nostr_privkey = l2generator.state.depositor_data[ depositor_id ].nostr_privkey;
+                        var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                        var socket = super_nostr.sockets[ socket_id ].socket;
+                        var msg = JSON.stringify({
+                            type: "initiate_ln_receive",
+                            msg: {
+                                amnt,
+                                chan_id,
+                            }
+                        });
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
                     }
                 } catch ( e ) {}
                 await super_nostr.waitSomeSeconds( 1 );
