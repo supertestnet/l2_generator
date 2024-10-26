@@ -63,6 +63,11 @@
                     }
                     return pmthash;
                 },
+                getInvoiceAmount: invoice => {
+                    var decoded = bolt11.decode( invoice );
+                    var amount = decoded[ "satoshis" ].toString();
+                    return Number( amount );
+                },
                 isValidHex: hex => {
                     if ( !hex ) return;
                     var length = hex.length;
@@ -183,7 +188,8 @@
                             //     var amnt = Number( prompt( `enter an amount of sats you want to send to the htlc` ) );
                             //     var info_for_bob = await hedgehog.aliceSendsHtlc( chan_id, amnt );
                             // }
-                            alert( `yay, your channel is open!` );
+                            // alert( `yay, your channel is open!` );
+                            return true;
                         } else {
                             // In this way, Alice does *not* receive data from Bob but instead
                             // opens a channel to him *cooperatively.* It is not yet implemented
@@ -808,7 +814,7 @@
 
                     return true;
                 },
-                aliceSendsHtlc: async ( chan_id, amnt, htlc_hash = null ) => {
+                aliceSendsHtlc: async ( chan_id, amnt, htlc_hash = null, invoice_to_pay ) => {
                     if ( amnt < 330 ) return alert( `the dust limit is 330 sats and you want to make an htlc worth less than that, i.e. only ${amnt} sats, so it cannot be done -- the software refuses and your only recourse is to find or make a modified version that allows dust htlcs` );
                     if ( Object.keys( hedgehog.state[ chan_id ].pending_htlc ).length ) return alert( `you have a pending htlc, and you cannot send money while you have one...clear it before proceeding` );
                     //automatically find out if I am Alice or Bob using the chan_id
@@ -1044,11 +1050,35 @@
                         alices_conditional_second_htlc_sig,
                     }
 
-                    //don't send the rest of the data tol Bob cosigns first_from_htlc_tx and second_from_htlc_tx
+                    //don't send the rest of the data til Bob cosigns first_from_htlc_tx and second_from_htlc_tx
                     //and the conditional versions thereof
-                    console.log( `send this info to bob:` );
-                    console.log( JSON.stringify( info_for_bob ) );
-                    var { bobs_first_htlc_sig, bobs_second_htlc_sig, bobs_conditional_first_htlc_sig, bobs_conditional_second_htlc_sig } = JSON.parse( prompt( `send the info in your console to bob and enter his reply` ) );
+                    // console.log( `send this info to bob:` );
+                    // console.log( JSON.stringify( info_for_bob ) );
+                    var recipient = $_GET[ "layer2" ];
+                    var depositor_id = Object.keys( l2generator.state.depositor_data )[ 0 ];
+                    var nostr_privkey = l2generator.state.depositor_data[ depositor_id ].nostr_privkey;
+                    var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                    var socket = super_nostr.sockets[ socket_id ].socket;
+                    var secret = super_nostr.getPrivkey();
+                    var msg = JSON.stringify({
+                        type: "initiate_ln_payment",
+                        msg: {
+                            info_for_bob,
+                            secret,
+                            invoice_to_pay,
+                        }
+                    });
+                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                    super_nostr.sendEvent( event, socket );
+                    var preparsed_info_from_bob = await getNote( secret );
+                    sessionStorage.removeItem( secret );
+                    console.log( preparsed_info_from_bob );
+                    var { secret_for_responding_to_bob } = JSON.parse( preparsed_info_from_bob );
+                    var info_from_bob = JSON.parse( preparsed_info_from_bob )[ "data_for_alice" ];
+                    console.log( info_from_bob );
+                    var { bobs_first_htlc_sig, bobs_second_htlc_sig, bobs_conditional_first_htlc_sig, bobs_conditional_second_htlc_sig } = info_from_bob;
+                    // var { bobs_first_htlc_sig, bobs_second_htlc_sig, bobs_conditional_first_htlc_sig, bobs_conditional_second_htlc_sig } = JSON.parse( prompt( `send the info in your console to bob and enter his reply -- btw he should be running hedgehog.bobReceivesHTLC()` ) );
 
                     //validate the sigs
                     if ( am_alice ) var pubkey_to_validate_against = hedgehog.state[ chan_id ].bobs_pubkey;
@@ -1087,9 +1117,21 @@
                     if ( conditional_revocation_sig ) object[ "conditional_revocation_sig" ] = conditional_revocation_sig;
                     if ( full_revocation_is_necessary ) object[ "full_revocation_preimage" ] = full_revocation_preimage;
 
-                    console.log( `send this info to bob:` );
-                    console.log( JSON.stringify( object ) );
-                    alert( `send the info in your console to bob and then click ok` );
+                    var msg = JSON.stringify({
+                        type: "secret_you_need",
+                        msg: {
+                            thing_needed: JSON.stringify( object ),
+                            secret: secret_for_responding_to_bob,
+                        }
+                    });
+                    var recipient = $_GET[ "layer2" ];
+                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                    super_nostr.sendEvent( event, socket );
+
+                    // console.log( `send this info to bob:` );
+                    // console.log( JSON.stringify( object ) );
+                    // alert( `send the info in your console to bob and then click ok` );
 
                     var prev_force_close_tx = hedgehog.state[ chan_id ].latest_force_close_txs[ 0 ];
 
@@ -1133,13 +1175,12 @@
                     hedgehog.state[ chan_id ].balances_before_most_recent_send = JSON.parse( JSON.stringify( hedgehog.state[ chan_id ].balances ) );
                     hedgehog.state[ chan_id ].balances_before_most_recent_receive = JSON.parse( JSON.stringify( hedgehog.state[ chan_id ].balances ) );
 
-                    //return here I am alice
-                    //if you have the preimage, send it to whoever you're sending money to
+                    //TODO: if you have the preimage, send it to whoever you're sending money to
                     //and remember to also tell them whatever amount you are sending so
                     //they can set up a scenario where they gain that much money if they
                     //disclose the preimage to bob
                 },
-                bobReceivesHTLC: async data => {
+                bobReceivesHTLC: async ( data, secret_for_responding_to_alice, alices_nostr_pubkey, invoice_to_pay ) => {
                     var data_was_here_originally = data;
                     if ( !data ) data = JSON.parse( prompt( `Enter the data from your counterparty` ) );
                     var chan_id = data[ "chan_id" ];
@@ -1148,6 +1189,11 @@
 
                     var amnt = data[ "amnt" ];
                     if ( amnt < 330 ) return alert( `the dust limit is 330 sats and this htlc is worth only ${amnt} sats so we reject it` );
+                    if ( amnt > hedgehog.state[ chan_id ].balances[ 0 ] ) return alert( `alice tried to send you more money than she has so we reject it` );
+                    //TODO: ensure checking the invoice here doesn't crash my app
+                    var invoice_amt = hedgehog.getInvoiceAmount( invoice_to_pay );
+                    //TODO: let the operator charge a fee to pay invoices
+                    if ( invoice_amt > amnt ) return alert( `alice tried to send you less money than the invoice she wants you to pay` );
 
                     //automatically find out if I am Alice or Bob using the chan_id
                     var am_alice = !!hedgehog.state[ chan_id ].alices_privkey;
@@ -1358,12 +1404,34 @@
                     if ( bobs_conditional_first_htlc_sig ) data_for_alice[ "bobs_conditional_first_htlc_sig" ] = bobs_conditional_first_htlc_sig;
                     if ( bobs_conditional_second_htlc_sig ) data_for_alice[ "bobs_conditional_second_htlc_sig" ] = bobs_conditional_second_htlc_sig;
 
-                    console.log( `send this data to alice:` );
-                    console.log( JSON.stringify( data_for_alice ) );
+                    // console.log( `send this data to alice:` );
+                    // console.log( JSON.stringify( data_for_alice ) );
 
-                    alert( `send the data in your console to alice and then click ok` );
-                    await hedgehog.waitSomeSeconds( 1 );
-                    var data = JSON.parse( prompt( `enter alice's reply here` ) );
+                    var l2id = Object.keys( l2generator.state.l2s )[ 0 ];
+                    var nostr_privkey = l2generator.state.l2s[ l2id ].l2_privkey;
+                    var socket_id = Object.keys( super_nostr.sockets )[ 0 ];
+                    var socket = super_nostr.sockets[ socket_id ].socket;
+                    var recipient = alices_nostr_pubkey;
+                    var secret_for_responding_to_bob = super_nostr.getPrivkey();
+                    var msg = JSON.stringify({
+                        type: "secret_you_need",
+                        msg: {
+                            thing_needed: JSON.stringify({
+                                data_for_alice, secret_for_responding_to_bob
+                            }),
+                            secret: secret_for_responding_to_alice,
+                        }
+                    });
+                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                    super_nostr.sendEvent( event, socket );
+                    var preparsed_info_from_alice = await getNote( secret_for_responding_to_bob );
+                    sessionStorage.removeItem( secret_for_responding_to_bob );
+                    var data = JSON.parse( preparsed_info_from_alice );
+
+                    // alert( `send the data in your console to alice and then click ok` );
+                    // await hedgehog.waitSomeSeconds( 1 );
+                    // var data = JSON.parse( prompt( `enter alice's reply here` ) );
 
                     //validate the rest of the data sent by your counterparty
 
@@ -1584,11 +1652,11 @@
 
                     //test the following scenarios:
 
-                    console.log( `first test tx0 (bob) tx1 (bob) second_from_htlc_tx (bob) [tested]` );
-                    console.log( `next test prev_tx0 (alice) replacement_tx1 (bob) new_second_from_htlc_tx (bob) [tested]` );
-                    console.log( `next test prev_tx0 (alice) replacement_tx1 (bob) new_second_from_htlc_tx (alice) [tested by proxy -- I checked that her copy of new_second_from_htlc_tx is identical to bob's, so it will necessarily work too if he broadcasts replacement_tx1]` );
-                    console.log( `next test tx0 (bob) tx1 (bob) first_from_htlc_tx (bob) [tested]` );
-                    console.log( `next test prev_tx0 (alice) replacement_tx1 (bob) new_first_from_htlc_tx (bob) [tested]` );
+                    // console.log( `first test tx0 (bob) tx1 (bob) second_from_htlc_tx (bob) [tested]` );
+                    // console.log( `next test prev_tx0 (alice) replacement_tx1 (bob) new_second_from_htlc_tx (bob) [tested]` );
+                    // console.log( `next test prev_tx0 (alice) replacement_tx1 (bob) new_second_from_htlc_tx (alice) [tested by proxy -- I checked that her copy of new_second_from_htlc_tx is identical to bob's, so it will necessarily work too if he broadcasts replacement_tx1]` );
+                    // console.log( `next test tx0 (bob) tx1 (bob) first_from_htlc_tx (bob) [tested]` );
+                    // console.log( `next test prev_tx0 (alice) replacement_tx1 (bob) new_first_from_htlc_tx (bob) [tested]` );
 
                     //note that I was gonna have Bob broadcast *his* prev_tx0 and then
                     //have *Alice* broadcast *her* replacement_tx1 but that won't
@@ -1596,12 +1664,12 @@
                     //go to the state *before* the htlc was created, in which Alice
                     //had more money coming to her
 
-                    //return here to set up a listener to get the preimage from somewhere
+                    //TODO: set up a listener to get the preimage from somewhere
                     //or restore the old state after too much time goes by without resolution
 
                     //i am bob
 
-                    return true;
+                    return invoice_to_pay;
                 },
                 bobSendsHtlc: async ( chan_id, amnt, htlc_hash = null ) => {
                     if ( amnt < 330 ) return alert( `the dust limit is 330 sats and you want to make an htlc worth less than that, i.e. only ${amnt} sats, so it cannot be done -- the software refuses and your only recourse is to find or make a modified version that allows dust htlcs` );
@@ -2140,8 +2208,6 @@
                     var [ _, cblock ] = tapscript.Tap.getPubKey( "ab".repeat( 32 ), { tree: revo_tree, target: second_revo_target });
                     restore_from_revo_tx.vin[ 0 ].witness = [ bobs_restoration_sig, alices_restoration_sig, second_revo_script, cblock ];
 
-                    //return here blah I am Bob
-
                     hedgehog.state[ chan_id ].pending_htlc = {
                         from: "bob",
                         now: Math.floor( Date.now() / 1000 ),
@@ -2200,6 +2266,7 @@
 
                     var amnt = data[ "amnt" ];
                     if ( amnt < 330 ) return alert( `the dust limit is 330 sats and this htlc is worth only ${amnt} sats so we reject it` );
+                    if ( amnt > hedgehog.state[ chan_id ].balances[ 1 ] ) return alert( `bob tried to send you more money than he has so we reject it` );
 
                     //give Bob a revocation hash
                     var alices_revocation_preimage = hedgehog.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
@@ -2689,8 +2756,6 @@
                         var full_revocation_sig = tapscript.Signer.taproot.sign( privkey, tx2, 0, { extension: tx2_target }).hex;
                     }
 
-                    //return here blih I am alice
-
                     //prepare and save the force closure initiation transaction
                     var [ _, cblock ] = tapscript.Tap.getPubKey( "ab".repeat( 32 ), { tree: tx0_tree, target: tx0_target });
                     //the order of the pubkeys is Alice first, then Bob, so -- if I am alice --
@@ -2816,10 +2881,10 @@
                     //go to the state *before* the htlc was created, in which Alice
                     //had more money coming to her
 
-                    //return here to set up a listener to get the preimage from somewhere
+                    //TODO: set up a listener to get the preimage from somewhere
                     //or restore the old state after too much time goes by without resolution
 
-                    //i am bob
+                    //i am alice
 
                     return true;
                 },
@@ -2867,16 +2932,18 @@
                     hedgehog.receive( data, skip_pending_check );
                     hedgehog.state[ chan_id ].pending_htlc = {}
                 },
-                checkIfOutgoingHTLCIsSettled: async chan_id => {
+                checkIfOutgoingHTLCIsSettled: async ( chan_id, preimage ) => {
                     if ( !chan_id ) chan_id = prompt( `enter chan_id` );
-                    console.log( JSON.stringify( {
-                        chan_id,
-                    } ) );
-                    alert( 'send the data in your console to your counterparty and then click ok -- btw they should run hedgehog.checkIfIncomingHTLCIsSettled()' );
-                    await hedgehog.waitSomeSeconds( 1 );
-                    var data = JSON.parse( prompt( `enter bob's reply here` ) );
-                    if ( data[ "status" ] === "unsettled" ) return alert( 'not settled yet' );
-                    var preimage = data[ "htlc_preimage" ];
+                    if ( !preimage ) {
+                        console.log( JSON.stringify( {
+                            chan_id,
+                        } ) );
+                        alert( 'send the data in your console to your counterparty and then click ok -- btw they should run hedgehog.checkIfIncomingHTLCIsSettled()' );
+                        await hedgehog.waitSomeSeconds( 1 );
+                        var data = JSON.parse( prompt( `enter bob's reply here` ) );
+                        if ( data[ "status" ] === "unsettled" ) return alert( 'not settled yet' );
+                        preimage = data[ "htlc_preimage" ];
+                    }
                     var pending_htlc = hedgehog.state[ chan_id ].pending_htlc;
                     var expected_hash = pending_htlc.htlc_hash;
                     //ensure hashing the preimage won't crash the pc
@@ -2889,9 +2956,10 @@
                     var amnt_to_send = hedgehog.state[ chan_id ].balances_before_most_recent_send[ 1 ] + pending_htlc[ "amnt" ];
                     var skip_pending_check = true;
                     var sigs_and_stuff = hedgehog.send( chan_id, amnt_to_send, null, skip_pending_check );
-                    console.log( "send this data to your counterparty:" );
-                    console.log( JSON.stringify( sigs_and_stuff ) );
+                    // console.log( "send this data to your counterparty:" );
+                    // console.log( JSON.stringify( sigs_and_stuff ) );
                     hedgehog.state[ chan_id ].pending_htlc = {}
+                    return sigs_and_stuff;
                 },
                 settleIncomingHTLC: async data => {
                     var data_was_here_originally = data;
@@ -3410,6 +3478,10 @@
             <p>Deposit amount: <span class="deposit_amount"></span> sats</p>
             <p><span class="deposit_invoice"></span></p>
         </div>
+        <div class="wallet_home hidden">
+            <p>Balance: <span class="depositor_ln_balance">loading...</span> sats</p>
+            <p><button class="send">Send</button> <button class="send">Receive</button></p>
+        </div>
         <script>
             var showPage = page => {
                 $( '.welcome_msg' ).classList.add( "hidden" );
@@ -3420,6 +3492,8 @@
                 $( '.show_operator_stats' ).classList.add( "hidden" );
                 $( '.deposit_to_l2' ).classList.add( "hidden" );
                 $( '.pay_deposit_cost' ).classList.add( "hidden" );
+                $( '.make_deposit' ).classList.add( "hidden" );
+                $( '.wallet_home' ).classList.add( "hidden" );
                 $( `.${page}` ).classList.remove( "hidden" );
             }
             $( '.generate_l2' ).onclick = async () => {
@@ -3662,19 +3736,17 @@
 
                         //start listening for the cost_of_deposit invoice to be paid
                         var loop = async () => {
-                            //TODO: if Alice doesn't pay the invoice and it expires, use
-                            //sig_for_papa_swap to sweep Bob's funds from the multisig
                             console.log( 'checking invoice status' );
                             var invoice_status_info = await nwcjs.checkInvoice( nwc_info, invoice, delay_tolerance );
-                            //TODO: ensure this doesn't fire until deposit_invoice exists
                             if ( invoice_status_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
                             if ( "result_type" in invoice_status_info && invoice_status_info[ "result_type" ] !== "lookup_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
                             if ( "error" in invoice_status_info && invoice_status_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_status_info[ "error" ] )} -- please try again` );
-                            console.log( invoice_status_info );
                             if ( invoice_status_info.result.settled_at ) {
                                 $( '.income' ).innerText = Number( $( '.income' ).innerText ) + cost_of_deposit;
                                 console.log( 'broadcast this:' );
                                 console.log( funding_txhex );
+                                var txfee = 500;
+                                $( '.expenses' ).innerText = Number( $( '.expenses' ).innerText ) + txfee;
                                 utxo_ids_for_papa_swap.forEach( utxo_id => {
                                     delete l2generator.state.utxos[ utxo_id ];
                                     if ( utxos_created && utxos_created[ 0 ][ "addy" ] === l2generator.state.latest_addy.addy ) {
@@ -3693,15 +3765,92 @@
                                 super_nostr.sendEvent( event, socket );
                                 return;
                             }
-                            await super_nostr.waitSomeSeconds( 5 );
+                            await super_nostr.waitSomeSeconds( 10 );
+                            return loop();
+                        }
+                        await loop();
+                        //start listening for the deposit_invoice to be paid
+                        var loop = async () => {
+                            //TODO: if Alice doesn't pay the invoice and it expires, use
+                            //sig_for_papa_swap to sweep Bob's funds from the multisig
+                            console.log( 'checking invoice status' );
+                            var invoice_status_info = await nwcjs.checkInvoice( nwc_info, deposit_invoice, delay_tolerance );
+                            if ( invoice_status_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                            if ( "result_type" in invoice_status_info && invoice_status_info[ "result_type" ] !== "lookup_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                            if ( "error" in invoice_status_info && invoice_status_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_status_info[ "error" ] )} -- please try again` );
+                            if ( invoice_status_info.result.settled_at ) {
+                               var msg = JSON.stringify({
+                                    type: "deposit_complete",
+                                    msg: {
+                                        chan_id,
+                                        preimage: invoice_status_info.result.preimage,
+                                    }
+                                });
+                                var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                                var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                                super_nostr.sendEvent( event, socket );
+                                return;
+                            }
+                            await super_nostr.waitSomeSeconds( 10 );
                             return loop();
                         }
                         await loop();
                     }
-                    if ( json[ "type" ] === "sig_for_papa_swap" ) {
+                    if ( json[ "type" ] === "secret_you_need" ) {
                         var secret = json.msg.secret;
-                        sessionStorage[ secret ] = json.msg.sig;
+                        sessionStorage[ secret ] = json.msg.thing_needed;
                         setTimeout( () => {sessionStorage.removeItem( secret );}, 5000 );
+                    }
+                    if ( json[ "type" ] === "initiate_ln_payment" ) {
+                        var info_from_alice = json.msg.info_for_bob;
+                        var invoice_to_pay = json.msg.invoice_to_pay;
+                        var secret_for_responding_to_alice = json.msg.secret;
+                        var alices_pubkey = event.pubkey;
+                        var invoice_to_pay = await hedgehog.bobReceivesHTLC( info_from_alice, secret_for_responding_to_alice, alices_pubkey, invoice_to_pay );
+                        var chan_id = info_from_alice[ "chan_id" ];
+                        if ( hedgehog.getInvoiceAmount( invoice_to_pay ) ) {
+                            var amnt = null;
+                            nwcjs.tryToPayInvoice( nwc_info, invoice_to_pay, amnt );
+                            //start listening for the cost_of_deposit invoice to be paid
+                            var loop = async () => {
+                                console.log( 'checking invoice status' );
+                                var delay_tolerance = 6;
+                                var invoice_status_info = await nwcjs.checkInvoice( nwc_info, invoice_to_pay, delay_tolerance );
+                                if ( invoice_status_info === "timed out" ) return alert( `you encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                                if ( "result_type" in invoice_status_info && invoice_status_info[ "result_type" ] !== "lookup_invoice" ) return alert( `your wallet encountered an undefined error while processing this deposit request, try again:\n\n${JSON.stringify( invoice_status_info )}` );
+                                if ( "error" in invoice_status_info && invoice_status_info[ "error" ] ) return alert( `error processing your deposit request: ${JSON.stringify( invoice_status_info[ "error" ] )} -- please try again` );
+                                if ( invoice_status_info.result.settled_at ) {
+                                    $( '.expenses' ).innerText = Number( $( '.expenses' ).innerText ) + Math.floor( invoice_status_info.result.fees_paid / 1000 );
+                                    var pmt_status = await hedgehog.settleIncomingHTLC({ chan_id, preimage: invoice_status_info.result.preimage });
+                                    if ( !pmt_status.startsWith( "that went well" ) ) return alert( `something went wrong: ${pmt_status}` );
+                                    var msg = JSON.stringify({
+                                        type: "payment_succeeded",
+                                        msg: {
+                                            preimage: invoice_status_info.result.preimage,
+                                            chan_id,
+                                        }
+                                    });
+                                    var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                                    var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                                    super_nostr.sendEvent( event, socket );
+                                    return;
+                                }
+                                await super_nostr.waitSomeSeconds( 10 );
+                                return loop();
+                            }
+                            await loop();
+                        }
+                    }
+                    if ( json[ "type" ] === "resolve_htlc" ) {
+                        var sigs_and_stuff = json.msg.sigs_and_stuff;
+                        var skip_pending_check = true;
+                        var chan_id = sigs_and_stuff[ "chan_id" ];
+                        if ( hedgehog.state[ chan_id ].pending_htlc && hedgehog.state[ chan_id ].pending_htlc.from !== "alice" ) return alert( 'it is unsafe to resolve this htlc' );
+                        //TODO: consider more deeply whether I am right to assume it is safe to resolve an htlc
+                        //that is from Alice; my reasoning is that her htlcs always pay me more money, so resolving
+                        //them is fine; I don't even need to check that she has the right preimage or anything;
+                        //because resolving the htlc always results in me receiving more money
+                        hedgehog.receive( sigs_and_stuff, skip_pending_check );
                     }
                 }
                 await super_nostr.newPermanentConnection( relay, listen, handleEvent );
@@ -3812,9 +3961,9 @@
 
                         var sig = tapscript.Signer.taproot.sign( alices_privkey, multisig_to_revocable_addy_tx, 0, { extension: multisig_tree[ 0 ] }).hex;
                         var msg = JSON.stringify({
-                            type: "sig_for_papa_swap",
+                            type: "secret_you_need",
                             msg: {
-                                sig,
+                                thing_needed: sig,
                                 secret,
                             }
                         });
@@ -3839,11 +3988,50 @@
                         //TODO: once the invoice is paid, store the preimage so you can
                         //penalize Bob if he tries to sweep the funds from the multisig
                         //using the sig_for_papa_swap
-                        hedgehog.openChannel( null, null, null, null, null, null, sigs_and_stuff );
+                        //TODO: ensure Alice cannot close her channel without the preimage
+                        //and that Bob can close the channel *without* the preimage (since
+                        //nwc backends don't always provide it)
+                        var channel_is_open = await hedgehog.openChannel( null, null, null, null, null, null, sigs_and_stuff );
                         console.log( 'broadcast this:' );
                         console.log( funding_txhex );
                         showPage( 'make_deposit' );
-                        alert( `only click ok once this tx confirms, or click ok immediately if you are ok with a 0-conf channel: ${txid}` );
+                        // alert( `only click ok once this tx confirms, or click ok immediately if you are ok with a 0-conf channel: ${txid}` );
+                        //TODO: check if deposit_invoice is paid and give user
+                        //an option to paste in the preimage manually in case
+                        //the operator doesn't provide it
+                        var deposit_invoice = $( '.deposit_invoice' ).innerText;
+                    }
+                    if ( json[ "type" ] === "deposit_complete" ) {
+                        //TODO: validate that the preimage matches the payment hash
+                        //and store it so the user can stop Bob in case he tries
+                        //to sweep the funds from the multisig
+                        console.log( "preimage that means Bob revoked his power to take his money back:" );
+                        console.log( json.msg.preimage );
+                        depositorLoop();
+                        showPage( 'wallet_home' );
+                    }
+                    if ( json[ "type" ] === "secret_you_need" ) {
+                        var secret = json.msg.secret;
+                        sessionStorage[ secret ] = json.msg.thing_needed;
+                        setTimeout( () => {sessionStorage.removeItem( secret );}, 5000 );
+                    }
+                    if ( json[ "type" ] === "payment_succeeded" ) {
+                        //TODO: validate the channel id and the preimage
+                        var chan_id = json.msg.chan_id;
+                        var preimage = json.msg.preimage;
+                        var sigs_and_stuff = await hedgehog.checkIfOutgoingHTLCIsSettled( chan_id, preimage );
+                        // console.log( "send this data to your counterparty:" );
+                        // console.log( JSON.stringify( sigs_and_stuff ) );
+                        var msg = JSON.stringify({
+                            type: "resolve_htlc",
+                            msg: {
+                                sigs_and_stuff,
+                            }
+                        });
+                        var recipient = $_GET[ "layer2" ];
+                        var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
+                        var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
+                        super_nostr.sendEvent( event, socket );
                     }
                 }
                 var socket_id = await super_nostr.newPermanentConnection( relay, listen, handleEvent );
@@ -3892,6 +4080,24 @@
                 var emsg = await super_nostr.encrypt( nostr_privkey, recipient, msg );
                 var event = await super_nostr.prepEvent( nostr_privkey, emsg, 4, [ [ "p", recipient ] ] );
                 super_nostr.sendEvent( event, socket );
+            }
+            var depositorLoop = async () => {
+                try {
+                    var chan_id = Object.keys( hedgehog.state )[ 0 ];
+                    var state = hedgehog.state[ chan_id ];
+                    var balance = state.balances[ 0 ];
+                    $( '.depositor_ln_balance' ).innerText = balance;
+                    $( '.send' ).onclick = async () => {
+                        var invoice = prompt( `enter an ln invoice` );
+                        var chan_id = Object.keys( hedgehog.state )[ 0 ];
+                        var htlc_hash = hedgehog.getInvoicePmthash( invoice );
+                        var amnt = hedgehog.getInvoiceAmount( invoice );
+                        if ( !amnt || !htlc_hash ) return alert( `error` );
+                        var info_for_bob = await hedgehog.aliceSendsHtlc( chan_id, amnt, htlc_hash, invoice );
+                    }
+                } catch ( e ) {}
+                await super_nostr.waitSomeSeconds( 1 );
+                depositorLoop();
             }
         </script>
     </body>
